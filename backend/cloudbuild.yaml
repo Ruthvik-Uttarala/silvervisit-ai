@@ -1,0 +1,43 @@
+substitutions:
+  _SERVICE: silvervisit-backend
+  _REGION: us-central1
+  _LOCATION: global
+  _ACTION_MODEL: gemini-2.5-flash
+  _LIVE_MODEL: gemini-live-2.5-flash-native-audio
+  _ENABLE_LIVE_API: "true"
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - gcr.io/$PROJECT_ID/${_SERVICE}:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - gcr.io/$PROJECT_ID/${_SERVICE}:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --project
+      - $PROJECT_ID
+      - --region
+      - ${_REGION}
+      - --platform
+      - managed
+      - --allow-unauthenticated
+      - --image
+      - gcr.io/$PROJECT_ID/${_SERVICE}:$COMMIT_SHA
+      - --port
+      - "8080"
+      - --set-env-vars
+      - GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_LOCATION},GEMINI_ACTION_MODEL=${_ACTION_MODEL},GEMINI_LIVE_MODEL=${_LIVE_MODEL},ENABLE_LIVE_API=${_ENABLE_LIVE_API}
+
+images:
+  - gcr.io/$PROJECT_ID/${_SERVICE}:$COMMIT_SHA

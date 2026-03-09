@@ -1,0 +1,56 @@
+{
+  "sessionId": "demo-session-001",
+  "userGoal": "Join my telehealth visit with Dr. Lee",
+  "pageUrl": "https://sandbox-telehealth.example.com/checkin",
+  "pageTitle": "Telehealth Check-in",
+  "visibleText": [
+    "Welcome to Silver Clinic",
+    "Check in for your visit",
+    "Patient name",
+    "Date of birth",
+    "Continue",
+    "Need help?"
+  ],
+  "elements": [
+    {
+      "id": "patient-name-input",
+      "text": "Patient name",
+      "role": "textbox",
+      "x": 160,
+      "y": 220,
+      "width": 360,
+      "height": 44,
+      "placeholder": "Enter your full name",
+      "value": "",
+      "enabled": true,
+      "visible": true
+    },
+    {
+      "id": "dob-input",
+      "text": "Date of birth",
+      "role": "textbox",
+      "x": 160,
+      "y": 286,
+      "width": 220,
+      "height": 44,
+      "placeholder": "MM/DD/YYYY",
+      "value": "",
+      "enabled": true,
+      "visible": true
+    },
+    {
+      "id": "continue-button",
+      "text": "Continue",
+      "role": "button",
+      "x": 160,
+      "y": 360,
+      "width": 180,
+      "height": 48,
+      "enabled": true,
+      "visible": true
+    }
+  ],
+  "screenshotMimeType": "image/png",
+  "screenshotBase64": "__LOAD_FROM_FIXTURE__",
+  "framesBase64": []
+}

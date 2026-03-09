@@ -1,0 +1,25 @@
+{
+  "name": "silvervisit-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SilverVisit AI backend for grounded telehealth UI navigation with Gemini on Vertex AI",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "smoke": "tsx scripts/smoke-test.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.29.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.11",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
