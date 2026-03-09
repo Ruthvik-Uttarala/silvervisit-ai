@@ -1,0 +1,16 @@
+{
+  "name": "silvervisit-ai",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend/sandbox-portal",
+    "frontend/extension"
+  ],
+  "scripts": {
+    "dev:sandbox": "npm run dev --workspace sandbox-portal",
+    "build:sandbox": "npm run build --workspace sandbox-portal",
+    "dev:extension": "npm run dev --workspace extension",
+    "build:extension": "npm run build --workspace extension",
+    "build": "npm run build:sandbox && npm run build:extension"
+  }
+}

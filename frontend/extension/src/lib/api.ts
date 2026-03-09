@@ -1,0 +1,44 @@
+import type { PlanActionRequest, PlanActionResponse, SessionStartRequest, SessionStartResponse } from "./types";
+
+const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
+
+function getBackendBaseUrl() {
+  const configured = import.meta.env.VITE_BACKEND_BASE_URL?.trim();
+  return configured && configured.length > 0 ? configured : DEFAULT_BACKEND_BASE_URL;
+}
+
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+    throw new Error(errorBody?.error ?? errorBody?.message ?? `Request failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function buildHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-Request-Id": crypto.randomUUID(),
+  };
+}
+
+export async function startSession(payload: SessionStartRequest): Promise<SessionStartResponse> {
+  const response = await fetch(`${getBackendBaseUrl()}/api/session/start`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse<SessionStartResponse>(response);
+}
+
+export async function planAction(payload: PlanActionRequest): Promise<PlanActionResponse> {
+  const response = await fetch(`${getBackendBaseUrl()}/api/plan-action`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse<PlanActionResponse>(response);
+}

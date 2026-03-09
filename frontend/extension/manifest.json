@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "SilverVisit Helper",
+  "version": "0.1.0",
+  "description": "Guides patients to the next step in the SilverVisit appointment flow.",
+  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Open SilverVisit Helper"
+  },
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
