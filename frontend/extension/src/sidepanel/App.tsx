@@ -1,12 +1,46 @@
-import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { planAction, startSession } from "../lib/api";
-import type { BackgroundResponse, PageSnapshot, PlanActionResponse } from "../lib/types";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getBackendBaseUrl, getBackendWsUrl, planAction, startSession } from "../lib/api";
+import type {
+  ActionObject,
+  BackgroundMessage,
+  BackgroundResponse,
+  PageContextWithScreenshot,
+  PlanActionResponse,
+} from "../lib/types";
 
-const DEFAULT_USER_GOAL = "Help me join my telehealth visit";
-const SEEDED_TRANSCRIPT = "Agent: I see your appointment. Look for the blue ring on your screen.";
+const DEFAULT_USER_GOAL = "Help me join my doctor appointment";
 
-async function sendBackgroundMessage<T extends BackgroundResponse>(message: unknown): Promise<T> {
+type LiveStatus = "disconnected" | "connecting" | "connected";
+
+interface CapabilityCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+interface LiveWireMessage {
+  type: string;
+  text?: string;
+  role?: string;
+  code?: string;
+  message?: string;
+}
+
+async function containsPermissions(query: chrome.permissions.Permissions): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    chrome.permissions.contains(query, (result) => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        reject(new Error(lastError.message));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+async function sendBackgroundMessage<T extends BackgroundResponse>(message: BackgroundMessage): Promise<T> {
   const response = (await chrome.runtime.sendMessage(message)) as T;
   if (!response.ok) {
     throw new Error(response.error);
@@ -14,148 +48,525 @@ async function sendBackgroundMessage<T extends BackgroundResponse>(message: unkn
   return response;
 }
 
-function summarizeSnapshot(snapshot: PageSnapshot) {
-  return `${snapshot.elements.length} elements and ${snapshot.visibleText.length} visible text snippets`;
+function nowTimeLabel() {
+  const now = new Date();
+  return now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function confidenceLabel(confidence: number) {
-  return `${Math.round(confidence * 100)}%`;
+function trimTranscript(items: string[], max = 80) {
+  return items.length > max ? items.slice(items.length - max) : items;
+}
+
+function describeAction(action: ActionObject) {
+  const base = action.type;
+  const target = action.targetId ? ` target=${action.targetId}` : "";
+  const value = action.value ? ` value=\"${action.value}\"` : "";
+  const direction = action.direction ? ` direction=${action.direction}` : "";
+  const amount = action.amount ? ` amount=${action.amount}` : "";
+  return `${base}${target}${value}${direction}${amount}`;
+}
+
+function canExecuteAction(action: ActionObject) {
+  return action.type !== "ask_user" && action.type !== "done";
+}
+
+function statusTone(status: PlanActionResponse["status"] | null) {
+  if (status === "ok") {
+    return "text-emerald-700";
+  }
+  if (status === "need_clarification") {
+    return "text-amber-700";
+  }
+  if (status === "error") {
+    return "text-red-700";
+  }
+  return "text-slate-700";
 }
 
 export default function App() {
+  const [userGoal, setUserGoal] = useState(DEFAULT_USER_GOAL);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<string[]>([SEEDED_TRANSCRIPT]);
   const [latestPlan, setLatestPlan] = useState<PlanActionResponse | null>(null);
+  const [transcript, setTranscript] = useState<string[]>([
+    "SilverVisit is ready. Enter your goal and click Run Next Step.",
+  ]);
+  const [isRunningStep, setIsRunningStep] = useState(false);
+  const [clickExecutions, setClickExecutions] = useState(0);
+  const [typeExecutions, setTypeExecutions] = useState(0);
 
-  const analyzeMutation = useMutation({
-    mutationFn: async () => {
-      const activeTabResponse = await sendBackgroundMessage<{ ok: true; tab: { tabId: number; title?: string; url?: string } }>({
-        type: "GET_ACTIVE_TAB",
-      });
+  const [capabilityChecks, setCapabilityChecks] = useState<CapabilityCheck[]>([]);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>("disconnected");
+  const [liveInput, setLiveInput] = useState("Please guide me through the current screen.");
+  const [liveTranscript, setLiveTranscript] = useState<string[]>([]);
 
-      const activeSessionId =
-        sessionId ??
-        (
-          await startSession({
-            userGoal: DEFAULT_USER_GOAL,
-          })
-        ).sessionId;
+  const liveSocketRef = useRef<WebSocket | null>(null);
 
-      const snapshotResponse = await sendBackgroundMessage<{ ok: true; snapshot: PageSnapshot }>({
-        type: "COLLECT_PAGE_STATE",
-      });
+  const appendTranscript = useCallback((line: string) => {
+    setTranscript((prev) => trimTranscript([...prev, `${nowTimeLabel()} ${line}`]));
+  }, []);
 
-      const plan = await planAction({
-        sessionId: activeSessionId,
-        userGoal: DEFAULT_USER_GOAL,
-        pageUrl: snapshotResponse.snapshot.pageUrl || activeTabResponse.tab.url,
-        pageTitle: snapshotResponse.snapshot.pageTitle || activeTabResponse.tab.title,
-        visibleText: snapshotResponse.snapshot.visibleText,
-        elements: snapshotResponse.snapshot.elements,
-      });
+  const appendLiveTranscript = useCallback((line: string) => {
+    setLiveTranscript((prev) => trimTranscript([...prev, `${nowTimeLabel()} ${line}`]));
+  }, []);
 
-      if (plan.status === "ok" && plan.action.type === "highlight" && plan.action.targetId) {
-        await sendBackgroundMessage<{ ok: true; message: string }>({
+  const ensureSession = useCallback(
+    async (goal: string) => {
+      if (sessionId) {
+        return sessionId;
+      }
+
+      const session = await startSession({ userGoal: goal });
+      setSessionId(session.sessionId);
+      appendTranscript(`Started session ${session.sessionId}.`);
+      return session.sessionId;
+    },
+    [appendTranscript, sessionId],
+  );
+
+  const collectContextWithScreenshot = useCallback(async (): Promise<PageContextWithScreenshot> => {
+    const response = await sendBackgroundMessage<{ ok: true; context: PageContextWithScreenshot }>({
+      type: "COLLECT_CONTEXT_WITH_SCREENSHOT",
+    });
+
+    if (!response.context.screenshot?.base64 || !response.context.screenshot?.mimeType) {
+      throw new Error("Screenshot capture is required for the happy path. Please keep the telehealth tab visible and retry.");
+    }
+
+    return response.context;
+  }, []);
+
+  const executePlannedAction = useCallback(
+    async (plan: PlanActionResponse) => {
+      if (plan.status !== "ok" || !canExecuteAction(plan.action)) {
+        return;
+      }
+
+      let executeMessage = "";
+      if (plan.action.type === "highlight" && plan.action.targetId) {
+        const response = await sendBackgroundMessage<{ ok: true; message: string }>({
           type: "HIGHLIGHT",
           id: plan.action.targetId,
         });
-      } else if (plan.status === "ok" && plan.action.type !== "ask_user" && plan.action.type !== "done") {
-        await sendBackgroundMessage<{ ok: true; message: string }>({
+        executeMessage = response.message;
+      } else {
+        const response = await sendBackgroundMessage<{ ok: true; message: string }>({
           type: "EXECUTE_ACTION",
           action: plan.action,
         });
+        executeMessage = response.message;
       }
 
-      return {
-        sessionId: activeSessionId,
-        snapshot: snapshotResponse.snapshot,
-        plan,
-      };
+      if (plan.action.type === "click") {
+        setClickExecutions((value) => value + 1);
+      }
+      if (plan.action.type === "type") {
+        setTypeExecutions((value) => value + 1);
+      }
+
+      appendTranscript(`Executed ${describeAction(plan.action)}. ${executeMessage}`);
     },
-    onSuccess: ({ sessionId: nextSessionId, snapshot, plan }) => {
-      setSessionId(nextSessionId);
+    [appendTranscript],
+  );
+
+  const runNextStep = useCallback(async () => {
+    const goal = userGoal.trim();
+    if (!goal) {
+      appendTranscript("Please enter a goal before running the next step.");
+      return;
+    }
+
+    setIsRunningStep(true);
+    try {
+      const currentSessionId = await ensureSession(goal);
+      const context = await collectContextWithScreenshot();
+      appendTranscript(
+        `Captured ${context.snapshot.elements.length} actionable elements, ${context.snapshot.visibleText.length} visible text snippets, and a screenshot.`,
+      );
+
+      const plan = await planAction({
+        sessionId: currentSessionId,
+        userGoal: goal,
+        pageUrl: context.snapshot.pageUrl || context.tab.url,
+        pageTitle: context.snapshot.pageTitle || context.tab.title,
+        visibleText: context.snapshot.visibleText,
+        elements: context.snapshot.elements,
+        screenshotMimeType: context.screenshot.mimeType,
+        screenshotBase64: context.screenshot.base64,
+      });
+
       setLatestPlan(plan);
-      setTranscript((current) => [
-        ...current,
-        `Agent: I analyzed ${summarizeSnapshot(snapshot)} on the current page.`,
-        `Agent: ${plan.message}`,
-        `Agent: ${plan.grounding.reasoningSummary}`,
-      ]);
-    },
-    onError: (error) => {
-      setTranscript((current) => [
-        ...current,
-        `Agent: ${(error as Error).message}`,
-      ]);
-    },
-  });
+      appendTranscript(`Planner status=${plan.status}. Next action: ${describeAction(plan.action)}.`);
+      appendTranscript(`Grounding: ${plan.grounding.reasoningSummary}`);
 
-  const statusLine = useMemo(() => {
-    if (analyzeMutation.isPending) {
-      return "Status: Analyzing screen...";
+      await executePlannedAction(plan);
+    } catch (error) {
+      appendTranscript(`Step failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsRunningStep(false);
+    }
+  }, [appendTranscript, collectContextWithScreenshot, ensureSession, executePlannedAction, userGoal]);
+
+  const runPermissionDiagnostics = useCallback(async () => {
+    const checks: CapabilityCheck[] = [];
+
+    const permissionCheck = async (
+      id: string,
+      label: string,
+      permissions: chrome.runtime.ManifestPermission[] = [],
+      origins: string[] = [],
+    ) => {
+      try {
+        const ok = await containsPermissions({ permissions, origins });
+        checks.push({
+          id,
+          label,
+          ok,
+          detail: ok ? "Available" : "Missing from extension runtime permissions.",
+        });
+      } catch (error) {
+        checks.push({
+          id,
+          label,
+          ok: false,
+          detail: error instanceof Error ? error.message : "Permission check failed.",
+        });
+      }
+    };
+
+    await permissionCheck("sidePanel", "MV3 side panel", ["sidePanel"]);
+    await permissionCheck("tabs", "Active tab inspection", ["tabs"]);
+    await permissionCheck("activeTab", "Active tab grant", ["activeTab"]);
+    await permissionCheck("scripting", "Content script execution", ["scripting"]);
+    await permissionCheck("host", "Host access for sandbox capture", [], ["<all_urls>"]);
+
+    try {
+      const tabResponse = await sendBackgroundMessage<{ ok: true; tab: { tabId: number; title?: string } }>({
+        type: "GET_ACTIVE_TAB",
+      });
+      checks.push({
+        id: "activeTabResolution",
+        label: "Active tab resolvable",
+        ok: true,
+        detail: `Tab ${tabResponse.tab.tabId}${tabResponse.tab.title ? ` (${tabResponse.tab.title})` : ""}`,
+      });
+    } catch (error) {
+      checks.push({
+        id: "activeTabResolution",
+        label: "Active tab resolvable",
+        ok: false,
+        detail: error instanceof Error ? error.message : "Failed to resolve active tab.",
+      });
     }
 
-    if (latestPlan?.status === "ok" && latestPlan.action.type === "highlight") {
-      return "Status: Join button highlighted";
+    setCapabilityChecks(checks);
+  }, []);
+
+  const disconnectLive = useCallback(() => {
+    const socket = liveSocketRef.current;
+    if (!socket) {
+      setLiveStatus("disconnected");
+      return;
     }
 
+    try {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "end" }));
+      }
+      socket.close();
+    } catch {
+      // Ignore local close race conditions.
+    }
+
+    liveSocketRef.current = null;
+    setLiveStatus("disconnected");
+  }, []);
+
+  const connectLive = useCallback(async () => {
+    if (liveStatus === "connecting" || liveStatus === "connected") {
+      return;
+    }
+
+    const goal = userGoal.trim() || DEFAULT_USER_GOAL;
+    setLiveStatus("connecting");
+
+    try {
+      const sid = await ensureSession(goal);
+      const socket = new WebSocket(`${getBackendWsUrl()}/api/live`);
+      liveSocketRef.current = socket;
+
+      socket.onopen = () => {
+        setLiveStatus("connected");
+        socket.send(
+          JSON.stringify({
+            type: "start",
+            sessionId: sid,
+            userGoal: goal,
+          }),
+        );
+        appendLiveTranscript("Connected to live session.");
+      };
+
+      socket.onmessage = (event) => {
+        let parsed: LiveWireMessage | null = null;
+        try {
+          parsed = JSON.parse(event.data as string) as LiveWireMessage;
+        } catch {
+          appendLiveTranscript(`Raw message: ${String(event.data)}`);
+          return;
+        }
+
+        if (!parsed) {
+          return;
+        }
+
+        if (parsed.type === "error") {
+          appendLiveTranscript(`Live error [${parsed.code}]: ${parsed.message}`);
+          return;
+        }
+
+        if (parsed.type === "model_text" && parsed.text) {
+          appendLiveTranscript(`Model: ${parsed.text}`);
+          return;
+        }
+
+        if (parsed.type === "transcript" && parsed.text) {
+          appendLiveTranscript(`${parsed.role ?? "system"}: ${parsed.text}`);
+          return;
+        }
+
+        appendLiveTranscript(`Live event: ${parsed.type}`);
+      };
+
+      socket.onerror = () => {
+        appendLiveTranscript("Live socket error occurred.");
+      };
+
+      socket.onclose = () => {
+        setLiveStatus("disconnected");
+        appendLiveTranscript("Live session disconnected.");
+      };
+    } catch (error) {
+      setLiveStatus("disconnected");
+      appendLiveTranscript(`Failed to connect live session: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [appendLiveTranscript, ensureSession, liveStatus, userGoal]);
+
+  const sendLiveTextAndFrame = useCallback(async () => {
+    const socket = liveSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      appendLiveTranscript("Connect live session first.");
+      return;
+    }
+
+    const text = liveInput.trim();
+    if (!text) {
+      appendLiveTranscript("Enter a live message before sending.");
+      return;
+    }
+
+    try {
+      const context = await collectContextWithScreenshot();
+      socket.send(JSON.stringify({ type: "user_text", text }));
+      socket.send(
+        JSON.stringify({
+          type: "user_image_frame",
+          mimeType: context.screenshot.mimeType,
+          dataBase64: context.screenshot.base64,
+        }),
+      );
+      appendLiveTranscript("Sent live text and current image frame.");
+    } catch (error) {
+      appendLiveTranscript(`Failed to send live text+frame: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [appendLiveTranscript, collectContextWithScreenshot, liveInput]);
+
+  const sendLiveAudioProbe = useCallback(() => {
+    const socket = liveSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      appendLiveTranscript("Connect live session first.");
+      return;
+    }
+
+    socket.send(
+      JSON.stringify({
+        type: "user_audio_chunk",
+        mimeType: "audio/pcm",
+        dataBase64: btoa("demo-audio-probe"),
+      }),
+    );
+    appendLiveTranscript("Sent audio probe chunk (expected graceful unsupported response unless PCM path is enabled).");
+  }, [appendLiveTranscript]);
+
+  useEffect(() => {
+    void runPermissionDiagnostics();
+  }, [runPermissionDiagnostics]);
+
+  useEffect(() => {
+    return () => {
+      disconnectLive();
+    };
+  }, [disconnectLive]);
+
+  const statusText = useMemo(() => {
+    if (isRunningStep) {
+      return "Analyzing screenshot and selecting one safe next action...";
+    }
+    if (latestPlan?.status === "ok") {
+      return "Ready for the next grounded step.";
+    }
     if (latestPlan?.status === "need_clarification") {
-      return "Status: Need clarification";
+      return "Waiting for your clarification.";
     }
-
     if (latestPlan?.status === "error") {
-      return "Status: Planner error";
+      return "Planner reported an error. Review transcript and retry.";
     }
+    return "Waiting for your first step.";
+  }, [isRunningStep, latestPlan?.status]);
 
-    return "Status: Waiting for Agent...";
-  }, [analyzeMutation.isPending, latestPlan]);
+  const hasExecutableCoverage = clickExecutions > 0 && typeExecutions > 0;
 
   return (
-    <main className="min-h-screen bg-white text-slate-950">
-      <div className="flex min-h-screen flex-col gap-6 px-6 py-8">
-        <header className="space-y-4 rounded-[2rem] border-2 border-slate-900 bg-slate-50 p-6">
-          <p className="text-sm font-bold uppercase tracking-[0.22em] text-sky-700">SilverVisit Helper</p>
-          <h1 className="text-3xl font-black tracking-tight text-slate-950">Help Me Join</h1>
-          <p className="text-2xl font-semibold leading-10 text-slate-900">
-            Analyze the current dashboard and guide the patient to the correct appointment control.
+    <main className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-5 px-5 py-6">
+        <header className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <p className="text-xs font-bold uppercase tracking-[0.25em] text-sky-700">SilverVisit UI Navigator</p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Telehealth Join Assistant</h1>
+          <p className="mt-3 text-lg leading-8 text-slate-700">
+            One grounded action at a time. Screenshot is required for every happy-path planning step.
           </p>
         </header>
 
-        <section className="rounded-[2rem] border-2 border-slate-900 bg-white p-6 shadow-sm">
-          <p className="text-2xl font-semibold leading-10 text-slate-900">{statusLine}</p>
-          <p className="mt-3 text-lg leading-8 text-slate-700">
-            The helper starts a session, captures the visible dashboard state, asks the backend for the next safe UI
-            action, and then highlights or executes that action on the active tab.
-          </p>
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <label htmlFor="goal" className="text-base font-bold text-slate-900">
+            Patient Goal
+          </label>
+          <textarea
+            id="goal"
+            value={userGoal}
+            onChange={(event) => setUserGoal(event.target.value)}
+            rows={3}
+            className="mt-2 w-full rounded-2xl border-2 border-slate-300 px-4 py-3 text-lg leading-8 focus:border-sky-600 focus:outline-none"
+            placeholder="Example: Help me join my doctor appointment."
+          />
+          <p className={`mt-3 text-lg font-semibold ${statusTone(latestPlan?.status ?? null)}`}>Status: {statusText}</p>
+          <p className="mt-2 text-sm text-slate-600">Backend: {getBackendBaseUrl()}</p>
         </section>
 
-        <button
-          type="button"
-          onClick={() => analyzeMutation.mutate()}
-          disabled={analyzeMutation.isPending}
-          className="rounded-[2rem] border-2 border-slate-900 bg-slate-950 px-6 py-5 text-2xl font-black text-white transition hover:bg-sky-700 disabled:cursor-progress disabled:bg-slate-700"
-        >
-          {analyzeMutation.isPending ? "Analyzing Screen..." : "Help Me Join"}
-        </button>
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void runNextStep()}
+              disabled={isRunningStep}
+              className="rounded-2xl bg-slate-950 px-5 py-3 text-lg font-black text-white transition hover:bg-sky-700 disabled:cursor-progress disabled:bg-slate-600"
+            >
+              {isRunningStep ? "Running Step..." : "Run Next Step (Screenshot Required)"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runPermissionDiagnostics()}
+              className="rounded-2xl border-2 border-slate-900 bg-white px-5 py-3 text-lg font-bold text-slate-900"
+            >
+              Recheck Permissions
+            </button>
+          </div>
 
-        <section className="rounded-[2rem] border-2 border-slate-900 bg-slate-50 p-6">
-          <h2 className="text-2xl font-black text-slate-950">Transcript</h2>
-          <div className="mt-4 space-y-3 rounded-[1.5rem] bg-white p-4 shadow-inner ring-1 ring-slate-200">
-            {transcript.map((line, index) => (
-              <p key={`${line}-${index}`} className="text-2xl leading-10 text-slate-900">
-                {line}
+          <div className="mt-4 grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            {capabilityChecks.map((check) => (
+              <p key={check.id} className={`text-base ${check.ok ? "text-emerald-700" : "text-red-700"}`}>
+                {check.ok ? "OK" : "Missing"} - {check.label}: {check.detail}
               </p>
             ))}
           </div>
         </section>
 
-        <section className="rounded-[2rem] border-2 border-slate-900 bg-white p-6">
-          <h2 className="text-xl font-black text-slate-950">Planner Details</h2>
-          <div className="mt-4 space-y-3 text-lg leading-8 text-slate-700">
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <h2 className="text-xl font-black text-slate-950">Execution Coverage</h2>
+          <p className="mt-2 text-base text-slate-700">Grounded click executions: {clickExecutions}</p>
+          <p className="text-base text-slate-700">Grounded type executions: {typeExecutions}</p>
+          <p className={`mt-2 text-base font-bold ${hasExecutableCoverage ? "text-emerald-700" : "text-amber-700"}`}>
+            {hasExecutableCoverage
+              ? "Coverage met: at least one click and one type action executed."
+              : "Coverage pending: run more steps until both click and type execute."}
+          </p>
+        </section>
+
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <h2 className="text-xl font-black text-slate-950">Latest Planner Result</h2>
+          <div className="mt-3 space-y-2 text-base text-slate-800">
             <p>Session: {sessionId ?? "Not started"}</p>
-            <p>Goal: {DEFAULT_USER_GOAL}</p>
-            <p>Action: {latestPlan?.action.type ?? "Waiting for planner"}</p>
-            <p>Confidence: {latestPlan ? confidenceLabel(latestPlan.confidence) : "N/A"}</p>
+            <p>Status: {latestPlan?.status ?? "N/A"}</p>
+            <p>Action: {latestPlan ? describeAction(latestPlan.action) : "N/A"}</p>
+            <p>Confidence: {latestPlan ? `${Math.round(latestPlan.confidence * 100)}%` : "N/A"}</p>
+            <p>Grounding: {latestPlan?.grounding.reasoningSummary ?? "N/A"}</p>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <h2 className="text-xl font-black text-slate-950">Live Session (Text + Image)</h2>
+          <p className="mt-2 text-base text-slate-700">Status: {liveStatus}</p>
+          <textarea
+            value={liveInput}
+            onChange={(event) => setLiveInput(event.target.value)}
+            rows={2}
+            className="mt-3 w-full rounded-2xl border-2 border-slate-300 px-4 py-3 text-base leading-7 focus:border-sky-600 focus:outline-none"
+          />
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void connectLive()}
+              disabled={liveStatus !== "disconnected"}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-base font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-600"
+            >
+              Start Live
+            </button>
+            <button
+              type="button"
+              onClick={() => void sendLiveTextAndFrame()}
+              disabled={liveStatus !== "connected"}
+              className="rounded-2xl bg-sky-700 px-4 py-2 text-base font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-500"
+            >
+              Send Text + Current Frame
+            </button>
+            <button
+              type="button"
+              onClick={sendLiveAudioProbe}
+              disabled={liveStatus !== "connected"}
+              className="rounded-2xl border-2 border-slate-900 px-4 py-2 text-base font-bold text-slate-900 disabled:cursor-not-allowed disabled:border-slate-400 disabled:text-slate-500"
+            >
+              Send Audio Probe
+            </button>
+            <button
+              type="button"
+              onClick={disconnectLive}
+              disabled={liveStatus === "disconnected"}
+              className="rounded-2xl bg-rose-700 px-4 py-2 text-base font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-500"
+            >
+              End Live
+            </button>
+          </div>
+
+          <div className="mt-4 max-h-48 space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            {liveTranscript.length === 0 ? (
+              <p className="text-sm text-slate-600">Live transcript will appear here.</p>
+            ) : (
+              liveTranscript.map((line, index) => (
+                <p key={`${line}-${index}`} className="text-sm text-slate-800">
+                  {line}
+                </p>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border-2 border-slate-900 bg-white p-5">
+          <h2 className="text-xl font-black text-slate-950">Navigator Transcript</h2>
+          <div className="mt-4 max-h-80 space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            {transcript.map((line, index) => (
+              <p key={`${line}-${index}`} className="text-base leading-7 text-slate-900">
+                {line}
+              </p>
+            ))}
           </div>
         </section>
       </div>

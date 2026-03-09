@@ -298,6 +298,17 @@ function clearExistingHighlight() {
   document.getElementById(HIGHLIGHT_RING_ID)?.remove();
 }
 
+function resolveTargetElement(elementId: string): HTMLElement | null {
+  const byId = document.getElementById(elementId);
+  if (isHTMLElement(byId)) {
+    return byId;
+  }
+
+  const escapedId = elementId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const byStableId = document.querySelector(`[${STABLE_ID_ATTR}="${escapedId}"]`);
+  return isHTMLElement(byStableId) ? byStableId : null;
+}
+
 function scrollDeltaFor(direction: ActionDirection = "down", amount: ActionAmount = "medium") {
   const magnitude = amount === "small" ? 240 : amount === "large" ? 720 : 420;
   switch (direction) {
@@ -341,8 +352,8 @@ export function collectPageSnapshot(): PageSnapshot {
 }
 
 export async function findAndHighlight(elementId: string) {
-  const target = document.getElementById(elementId);
-  if (!target || !isHTMLElement(target)) {
+  const target = resolveTargetElement(elementId);
+  if (!target) {
     return {
       ok: false as const,
       error: `Could not find element with id "${elementId}" on this page.`,
@@ -415,8 +426,8 @@ export async function executeAction(action: ActionObject) {
       if (!action.targetId) {
         return { ok: false as const, error: "Click action is missing targetId." };
       }
-      const target = document.getElementById(action.targetId);
-      if (!target || !isHTMLElement(target)) {
+      const target = resolveTargetElement(action.targetId);
+      if (!target) {
         return { ok: false as const, error: `Could not find target ${action.targetId}.` };
       }
       target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
@@ -429,8 +440,8 @@ export async function executeAction(action: ActionObject) {
       if (!action.targetId || typeof action.value !== "string") {
         return { ok: false as const, error: "Type action is missing targetId or value." };
       }
-      const target = document.getElementById(action.targetId);
-      if (!target || !isHTMLElement(target)) {
+      const target = resolveTargetElement(action.targetId);
+      if (!target) {
         return { ok: false as const, error: `Could not find target ${action.targetId}.` };
       }
       target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
@@ -443,8 +454,8 @@ export async function executeAction(action: ActionObject) {
 
     case "scroll": {
       if (action.targetId) {
-        const target = document.getElementById(action.targetId);
-        if (target && isHTMLElement(target)) {
+        const target = resolveTargetElement(action.targetId);
+        if (target) {
           target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
           return { ok: true as const, message: `Scrolled to ${action.targetId}.` };
         }

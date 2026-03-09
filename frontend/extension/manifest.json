@@ -3,7 +3,7 @@
   "name": "SilverVisit Helper",
   "version": "0.1.0",
   "description": "Guides patients to the next step in the SilverVisit appointment flow.",
-  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "permissions": ["sidePanel", "activeTab", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "Open SilverVisit Helper"

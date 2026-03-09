@@ -2,9 +2,20 @@ import type { PlanActionRequest, PlanActionResponse, SessionStartRequest, Sessio
 
 const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
 
-function getBackendBaseUrl() {
+export function getBackendBaseUrl() {
   const configured = import.meta.env.VITE_BACKEND_BASE_URL?.trim();
   return configured && configured.length > 0 ? configured : DEFAULT_BACKEND_BASE_URL;
+}
+
+export function getBackendWsUrl() {
+  const httpUrl = getBackendBaseUrl();
+  if (httpUrl.startsWith("https://")) {
+    return `wss://${httpUrl.slice("https://".length)}`;
+  }
+  if (httpUrl.startsWith("http://")) {
+    return `ws://${httpUrl.slice("http://".length)}`;
+  }
+  return `ws://${httpUrl}`;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {

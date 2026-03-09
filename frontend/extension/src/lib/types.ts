@@ -27,6 +27,17 @@ export interface PageSnapshot {
   elements: UIElementSnapshot[];
 }
 
+export interface ScreenshotCapture {
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  base64: string;
+}
+
+export interface PageContextWithScreenshot {
+  tab: ActiveTabInfo;
+  snapshot: PageSnapshot;
+  screenshot: ScreenshotCapture;
+}
+
 export interface SessionStartRequest {
   userGoal: string;
 }
@@ -74,6 +85,7 @@ export interface PlanActionResponse {
 
 export interface ActiveTabInfo {
   tabId: number;
+  windowId?: number;
   url?: string;
   title?: string;
 }
@@ -81,12 +93,14 @@ export interface ActiveTabInfo {
 export type BackgroundMessage =
   | { type: "GET_ACTIVE_TAB" }
   | { type: "COLLECT_PAGE_STATE" }
+  | { type: "COLLECT_CONTEXT_WITH_SCREENSHOT" }
   | { type: "EXECUTE_ACTION"; action: ActionObject }
   | { type: "HIGHLIGHT"; id: string };
 
 export type BackgroundResponse =
   | { ok: true; tab: ActiveTabInfo }
   | { ok: true; snapshot: PageSnapshot }
+  | { ok: true; context: PageContextWithScreenshot }
   | { ok: true; message: string }
   | { ok: false; error: string };
 

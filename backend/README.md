@@ -110,6 +110,10 @@ Smoke test coverage:
 - attempts real Vertex planning call when env + ADC are present
 - otherwise prints exact missing env/ADC guidance and still validates fallback behavior
 
+Demo requirement note:
+- The primary SilverVisit happy path should send a real screenshot on every planning step from the extension.
+- DOM-only planner calls should be treated as fallback/non-happy-path behavior.
+
 ## Example curl Commands
 Start session:
 ```bash
