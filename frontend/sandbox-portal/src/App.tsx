@@ -21,25 +21,30 @@ const STEP_ORDER: FlowStep[] = [
   "joined-call",
 ];
 
+const STEP_LABELS: Record<FlowStep, string> = {
+  login: "Login",
+  appointments: "Appointments",
+  details: "Appointment Details",
+  camera: "Camera",
+  microphone: "Microphone",
+  "device-test": "Device Test",
+  "waiting-room": "Waiting Room",
+  "joined-call": "Joined Call",
+};
+
+const NEXT_STEP: Record<FlowStep, FlowStep | null> = {
+  login: "appointments",
+  appointments: "details",
+  details: "camera",
+  camera: "microphone",
+  microphone: "device-test",
+  "device-test": "waiting-room",
+  "waiting-room": "joined-call",
+  "joined-call": null,
+};
+
 function stepLabel(step: FlowStep) {
-  switch (step) {
-    case "login":
-      return "Login";
-    case "appointments":
-      return "Appointments";
-    case "details":
-      return "Visit Details";
-    case "camera":
-      return "Camera";
-    case "microphone":
-      return "Microphone";
-    case "device-test":
-      return "Device Test";
-    case "waiting-room":
-      return "Waiting Room";
-    case "joined-call":
-      return "Joined Call";
-  }
+  return STEP_LABELS[step];
 }
 
 export default function App() {
@@ -55,6 +60,18 @@ export default function App() {
   }, [step]);
 
   const canLogin = fullName.trim().length > 1 && dob.trim().length > 0 && password.trim().length > 2;
+
+  const transitionStep = (target: FlowStep) => {
+    setStep((current) => (NEXT_STEP[current] === target ? target : current));
+  };
+
+  const resetDemoFlow = () => {
+    setStep("login");
+    setFullName("");
+    setDob("");
+    setPassword("");
+    setDeviceNote("");
+  };
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -115,7 +132,7 @@ export default function App() {
               <button
                 id="login-continue-btn"
                 type="button"
-                onClick={() => setStep("appointments")}
+                onClick={() => transitionStep("appointments")}
                 disabled={!canLogin}
                 className="mt-2 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
               >
@@ -145,7 +162,7 @@ export default function App() {
               <button
                 id="open-appointment-details-btn"
                 type="button"
-                onClick={() => setStep("details")}
+                onClick={() => transitionStep("details")}
                 className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-base font-semibold text-white"
               >
                 Open Appointment Details
@@ -167,13 +184,13 @@ export default function App() {
               <li>Consent received</li>
               <li>Estimated wait time: 3 minutes</li>
             </ul>
-            <button
-              id="join-visit-btn"
-              type="button"
-              onClick={() => setStep("camera")}
-              className="mt-5 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white"
-            >
-              Join Video Visit
+              <button
+                id="join-visit-btn"
+                type="button"
+                onClick={() => transitionStep("camera")}
+                className="mt-5 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white"
+              >
+                Join Video Visit
             </button>
           </section>
         )}
@@ -186,13 +203,13 @@ export default function App() {
             <p className="mt-2 text-base text-slate-700">
               Allow camera to continue. This is a simulated permission step for the demo.
             </p>
-            <button
-              id="camera-allow-btn"
-              type="button"
-              onClick={() => setStep("microphone")}
-              className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
-            >
-              Allow Camera
+              <button
+                id="camera-allow-btn"
+                type="button"
+                onClick={() => transitionStep("microphone")}
+                className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
+              >
+                Allow Camera
             </button>
           </section>
         )}
@@ -205,13 +222,13 @@ export default function App() {
             <p className="mt-2 text-base text-slate-700">
               Allow microphone to continue. This is a simulated permission step for the demo.
             </p>
-            <button
-              id="microphone-allow-btn"
-              type="button"
-              onClick={() => setStep("device-test")}
-              className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
-            >
-              Allow Microphone
+              <button
+                id="microphone-allow-btn"
+                type="button"
+                onClick={() => transitionStep("device-test")}
+                className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
+              >
+                Allow Microphone
             </button>
           </section>
         )}
@@ -237,7 +254,7 @@ export default function App() {
             <button
               id="finish-device-test-btn"
               type="button"
-              onClick={() => setStep("waiting-room")}
+              onClick={() => transitionStep("waiting-room")}
               className="mt-5 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white"
             >
               Continue to Waiting Room
@@ -257,7 +274,7 @@ export default function App() {
             <button
               id="enter-call-btn"
               type="button"
-              onClick={() => setStep("joined-call")}
+              onClick={() => transitionStep("joined-call")}
               className="mt-5 rounded-2xl bg-emerald-700 px-5 py-3 text-lg font-bold text-white"
             >
               Enter Call
@@ -277,13 +294,7 @@ export default function App() {
             <button
               id="restart-demo-btn"
               type="button"
-              onClick={() => {
-                setStep("login");
-                setFullName("");
-                setDob("");
-                setPassword("");
-                setDeviceNote("");
-              }}
+              onClick={resetDemoFlow}
               className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
             >
               Restart Demo Flow

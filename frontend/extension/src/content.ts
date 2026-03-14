@@ -3,6 +3,12 @@ import type { ContentScriptMessage, ContentScriptResponse } from "./lib/types";
 
 async function handleMessage(message: ContentScriptMessage): Promise<ContentScriptResponse> {
   switch (message.type) {
+    case "PING":
+      return {
+        ok: true,
+        message: "Content script is ready.",
+      };
+
     case "COLLECT_PAGE_STATE":
       return {
         ok: true,

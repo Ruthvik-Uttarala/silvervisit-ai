@@ -80,8 +80,18 @@ If you want real Vertex AI calls locally:
 ```bash
 gcloud auth application-default login
 export GOOGLE_GENAI_USE_VERTEXAI=true
-export GOOGLE_CLOUD_PROJECT=YOUR_PROJECT
-export GOOGLE_CLOUD_LOCATION=global
+export GOOGLE_CLOUD_PROJECT=silvervisit-ai
+export GOOGLE_CLOUD_LOCATION=us-central1
+export ENABLE_LIVE_API=true
+```
+
+PowerShell equivalent:
+```powershell
+$env:GOOGLE_GENAI_USE_VERTEXAI="true"
+$env:GOOGLE_CLOUD_PROJECT="silvervisit-ai"
+$env:GOOGLE_CLOUD_LOCATION="us-central1"
+$env:ENABLE_LIVE_API="true"
+gcloud auth application-default login
 ```
 
 ## Run Locally
@@ -113,6 +123,7 @@ Smoke test coverage:
 Demo requirement note:
 - The primary SilverVisit happy path should send a real screenshot on every planning step from the extension.
 - DOM-only planner calls should be treated as fallback/non-happy-path behavior.
+- Screenshot payloads are validated for supported MIME + byte-signature match before planner/live submission.
 
 ## Example curl Commands
 Start session:
@@ -141,6 +152,7 @@ Using any WS client to `ws://localhost:8080/api/live`:
 ```json
 {"type":"start","sessionId":"demo-live-1","userGoal":"Help me join my visit"}
 ```
+Wait for transcript containing `LIVE_READY` before sending user turns.
 2. Send text:
 ```json
 {"type":"user_text","text":"I cannot find the join button"}
@@ -161,7 +173,7 @@ Using any WS client to `ws://localhost:8080/api/live`:
 ## Live Mode Notes
 - If `ENABLE_LIVE_API=false`, route remains available and responds with structured `error` messages.
 - If enabled but Vertex/ADC is missing, route returns structured `error` with remediation hints.
-- Demo-usable live path implemented: text + image input and model text output via Gemini Live.
+- Demo-usable live path implemented: `start -> LIVE_READY -> user_text + user_image_frame` and model text output via Gemini Live.
 
 ## Cloud Run Deployment
 ### Option 1: Scripted deploy

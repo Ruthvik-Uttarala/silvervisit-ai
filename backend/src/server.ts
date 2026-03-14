@@ -6,28 +6,22 @@ import { handleLiveSocketConnection } from "./liveSession";
 import { logger } from "./logger";
 import { sessionStore } from "./sessions";
 import { handleHealth } from "./routes/health";
-import { handlePlanAction } from "./routes/planAction";
+import { buildPlanActionErrorResponse, handlePlanAction } from "./routes/planAction";
 import { handleSessionStart } from "./routes/session";
-import { generateRequestId, readJsonBody, safeErrorMessage, sendJson, setCorsHeaders } from "./utils";
+import {
+  assertJsonContentType,
+  generateRequestId,
+  HttpRequestError,
+  readJsonBody,
+  safeErrorMessage,
+  sendJson,
+  setCorsHeaders,
+} from "./utils";
 
 export interface RunningServer {
   server: Server;
   port: number;
   close: () => Promise<void>;
-}
-
-function planActionErrorShape(message: string) {
-  return {
-    status: "error" as const,
-    message,
-    action: { type: "ask_user" as const },
-    confidence: 0,
-    grounding: {
-      matchedElementIds: [],
-      matchedVisibleText: [],
-      reasoningSummary: message,
-    },
-  };
 }
 
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -66,6 +60,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
     }
 
     if (method === "POST" && pathname === "/api/plan-action") {
+      assertJsonContentType(req);
       const body = await readJsonBody(req, config.maxRequestBytes);
       await handlePlanAction(res, body, requestId, sessionStore, config, logger);
       return;
@@ -81,19 +76,34 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
     );
   } catch (error) {
     const message = safeErrorMessage(error);
-    const isBodyError = message.includes("Invalid JSON") || message.includes("Request body exceeds");
     logger.error("HTTP request failed", {
       requestId,
       method,
       path: pathname,
       error: message,
     });
+
     if (method === "POST" && pathname === "/api/plan-action") {
-      sendJson(res, isBodyError ? 400 : 500, planActionErrorShape(message), requestId);
+      if (error instanceof HttpRequestError) {
+        sendJson(res, error.statusCode, buildPlanActionErrorResponse(error.message, "error"), requestId);
+        return;
+      }
+
+      sendJson(
+        res,
+        500,
+        buildPlanActionErrorResponse("Internal server error while planning next action.", "error"),
+        requestId,
+      );
       return;
     }
 
-    sendJson(res, isBodyError ? 400 : 500, { error: message }, requestId);
+    if (error instanceof HttpRequestError) {
+      sendJson(res, error.statusCode, { error: error.message }, requestId);
+      return;
+    }
+
+    sendJson(res, 500, { error: message }, requestId);
   }
 }
 

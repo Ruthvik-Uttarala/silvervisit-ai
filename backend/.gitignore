@@ -1,4 +1,23 @@
+# env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+application_default_credentials.json
+
+# logs
+*.log
+
+# node
 node_modules/
 dist/
-.env
-npm-debug.log*
+build/
+
+# local IDE/system
+.vscode/
+.DS_Store
+Thumbs.db

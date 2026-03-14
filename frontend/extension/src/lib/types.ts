@@ -47,6 +47,13 @@ export interface SessionStartResponse {
   createdAt: string;
 }
 
+export interface HealthResponse {
+  ok: boolean;
+  service: string;
+  liveApiConfigured: boolean;
+  vertexConfigured: boolean;
+}
+
 export interface PlanActionRequest {
   sessionId: string;
   userGoal: string;
@@ -94,6 +101,7 @@ export type BackgroundMessage =
   | { type: "GET_ACTIVE_TAB" }
   | { type: "COLLECT_PAGE_STATE" }
   | { type: "COLLECT_CONTEXT_WITH_SCREENSHOT" }
+  | { type: "PING_CONTENT_SCRIPT" }
   | { type: "EXECUTE_ACTION"; action: ActionObject }
   | { type: "HIGHLIGHT"; id: string };
 
@@ -105,6 +113,7 @@ export type BackgroundResponse =
   | { ok: false; error: string };
 
 export type ContentScriptMessage =
+  | { type: "PING" }
   | { type: "COLLECT_PAGE_STATE" }
   | { type: "HIGHLIGHT"; id: string }
   | { type: "EXECUTE_ACTION"; action: ActionObject };

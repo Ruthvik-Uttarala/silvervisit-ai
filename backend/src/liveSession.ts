@@ -7,7 +7,7 @@ import { SessionStore } from "./sessions";
 import { AppConfig, LiveClientMessage, LiveServerMessage, WsErrorMessage } from "./types";
 import { decodeBase64, nowIso, safeErrorMessage, sanitizeBase64 } from "./utils";
 import { getVertexClient } from "./vertex";
-import { ALLOWED_IMAGE_MIME_TYPES } from "./validation/requestValidation";
+import { ALLOWED_IMAGE_MIME_TYPES, detectImageMimeType } from "./validation/requestValidation";
 
 interface LiveConnectionContext {
   config: AppConfig;
@@ -15,6 +15,8 @@ interface LiveConnectionContext {
   sessions: SessionStore;
   requestId: string;
 }
+
+const LIVE_CONNECT_TIMEOUT_MS = 15000;
 
 function sendMessage(ws: WebSocket, message: LiveServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
@@ -30,6 +32,15 @@ function sendError(ws: WebSocket, code: string, message: string, retryable = fal
     retryable,
   };
   sendMessage(ws, payload);
+}
+
+function sendFatalErrorAndClose(ws: WebSocket, code: string, message: string): void {
+  sendError(ws, code, message, false);
+  setTimeout(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(1011, code);
+    }
+  }, 25);
 }
 
 function parseIncomingMessage(raw: WebSocket.RawData): LiveClientMessage | null {
@@ -156,6 +167,7 @@ export function handleLiveSocketConnection(
 ): void {
   let liveSession: any = null;
   let liveStarted = false;
+  let liveReady = false;
   let currentSessionId: string = crypto.randomUUID();
 
   sendMessage(ws, {
@@ -220,48 +232,61 @@ export function handleLiveSocketConnection(
     sendMessage(ws, {
       type: "transcript",
       role: "system",
-      text: `Live session initialized for ${currentSessionId}.`,
+      text: `Start request accepted for ${currentSessionId}. Initializing Gemini Live session.`,
     });
 
     if (!context.config.enableLiveApi) {
-      sendError(
+      liveStarted = false;
+      liveReady = false;
+      sendFatalErrorAndClose(
         ws,
         "live_disabled",
         "Live API is disabled. Set ENABLE_LIVE_API=true to connect Gemini Live.",
-        false,
       );
       return;
     }
 
     if (!isVertexConfigured(context.config)) {
-      sendError(
+      liveStarted = false;
+      liveReady = false;
+      sendFatalErrorAndClose(
         ws,
         "live_not_configured",
         "Vertex AI is not configured. Set GOOGLE_GENAI_USE_VERTEXAI=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION.",
-        false,
       );
       return;
     }
 
     try {
+      if (liveSession) {
+        await closeLiveConnection(liveSession);
+        liveSession = null;
+      }
+
       const client: any = getVertexClient(context.config);
-      liveSession = await client.live.connect({
+      liveStarted = true;
+      liveReady = false;
+      const connectPromise = client.live.connect({
         model: context.config.geminiLiveModel,
         callbacks: {
           onopen: () => {
+            liveReady = true;
             sendMessage(ws, {
               type: "transcript",
               role: "system",
-              text: "Gemini Live session connected.",
+              text: "LIVE_READY Gemini Live session connected and ready for text + image turns.",
             });
           },
           onmessage: (event: unknown) => {
             onModelMessage(event);
           },
           onerror: (error: unknown) => {
+            liveReady = false;
             sendError(ws, "live_runtime_error", safeErrorMessage(error), true);
           },
           onclose: () => {
+            liveStarted = false;
+            liveReady = false;
             sendMessage(ws, {
               type: "transcript",
               role: "system",
@@ -270,13 +295,17 @@ export function handleLiveSocketConnection(
           },
         },
       });
-      liveStarted = true;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Gemini Live connection timed out after ${LIVE_CONNECT_TIMEOUT_MS}ms`)), LIVE_CONNECT_TIMEOUT_MS);
+      });
+      liveSession = await Promise.race([connectPromise, timeoutPromise]);
     } catch (error) {
-      sendError(
+      liveStarted = false;
+      liveReady = false;
+      sendFatalErrorAndClose(
         ws,
         "live_start_failed",
         `Failed to start Gemini Live session: ${safeErrorMessage(error)}`,
-        true,
       );
     }
   };
@@ -305,6 +334,11 @@ export function handleLiveSocketConnection(
       return;
     }
 
+    if (!liveReady) {
+      sendError(ws, "live_not_ready", "Wait for LIVE_READY acknowledgement before sending user_text.", true);
+      return;
+    }
+
     try {
       await sendTextTurn(liveSession, textMessage.text.trim());
     } catch (error) {
@@ -330,7 +364,21 @@ export function handleLiveSocketConnection(
     }
 
     try {
-      decodeBase64(imageMessage.dataBase64);
+      const decoded = decodeBase64(imageMessage.dataBase64);
+      const detectedMime = detectImageMimeType(decoded);
+      if (!detectedMime) {
+        sendError(ws, "invalid_image_payload", "Image payload is not a valid PNG, JPEG, or WEBP byte stream.", false);
+        return;
+      }
+      if (detectedMime !== imageMessage.mimeType) {
+        sendError(
+          ws,
+          "invalid_image_payload",
+          `Image payload mime mismatch. Declared ${imageMessage.mimeType}, detected ${detectedMime}.`,
+          false,
+        );
+        return;
+      }
     } catch (error) {
       sendError(ws, "invalid_image_payload", `Image data is not valid base64: ${safeErrorMessage(error)}`, false);
       return;
@@ -344,6 +392,11 @@ export function handleLiveSocketConnection(
 
     if (!liveStarted || !liveSession) {
       sendError(ws, "live_not_started", "Send a start message before user_image_frame.", true);
+      return;
+    }
+
+    if (!liveReady) {
+      sendError(ws, "live_not_ready", "Wait for LIVE_READY acknowledgement before sending user_image_frame.", true);
       return;
     }
 
@@ -388,6 +441,7 @@ export function handleLiveSocketConnection(
       await closeLiveConnection(liveSession);
       liveSession = null;
       liveStarted = false;
+      liveReady = false;
     } catch (error) {
       sendError(ws, "live_close_failed", safeErrorMessage(error), false);
     }
@@ -440,7 +494,10 @@ export function handleLiveSocketConnection(
   });
 
   ws.on("close", () => {
+    liveReady = false;
+    liveStarted = false;
     void closeLiveConnection(liveSession);
+    liveSession = null;
   });
 
   ws.on("error", (error) => {

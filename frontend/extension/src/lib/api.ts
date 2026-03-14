@@ -1,4 +1,10 @@
-import type { PlanActionRequest, PlanActionResponse, SessionStartRequest, SessionStartResponse } from "./types";
+import type {
+  HealthResponse,
+  PlanActionRequest,
+  PlanActionResponse,
+  SessionStartRequest,
+  SessionStartResponse,
+} from "./types";
 
 const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
 
@@ -52,4 +58,14 @@ export async function planAction(payload: PlanActionRequest): Promise<PlanAction
   });
 
   return parseJsonResponse<PlanActionResponse>(response);
+}
+
+export async function getHealth(): Promise<HealthResponse> {
+  const response = await fetch(`${getBackendBaseUrl()}/health`, {
+    method: "GET",
+    headers: {
+      "X-Request-Id": crypto.randomUUID(),
+    },
+  });
+  return parseJsonResponse<HealthResponse>(response);
 }

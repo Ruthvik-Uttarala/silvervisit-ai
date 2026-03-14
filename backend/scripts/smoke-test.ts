@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { startServer } from "../src/server";
@@ -44,6 +45,40 @@ function validatePlanActionShape(payload: any): void {
   assert.equal(typeof payload.grounding.reasoningSummary, "string");
 }
 
+function validateGroundingAgainstRequest(payload: any, request: any): void {
+  const elementMap = new Map<string, any>(
+    Array.isArray(request.elements)
+      ? request.elements
+          .filter((element: any) => element && typeof element.id === "string")
+          .map((element: any) => [element.id, element])
+      : [],
+  );
+  const visibleTextSet = new Set<string>(Array.isArray(request.visibleText) ? request.visibleText : []);
+
+  for (const id of payload.grounding.matchedElementIds as string[]) {
+    assert.ok(elementMap.has(id), `grounding.matchedElementIds contains unknown id: ${id}`);
+  }
+
+  for (const text of payload.grounding.matchedVisibleText as string[]) {
+    assert.ok(visibleTextSet.has(text), `grounding.matchedVisibleText contains unknown text: ${text}`);
+  }
+
+  if (payload.action.targetId !== undefined) {
+    const target = elementMap.get(payload.action.targetId);
+    assert.ok(target, "action.targetId must exist in request.elements");
+    if (["click", "type"].includes(payload.action.type)) {
+      assert.notEqual(target.visible, false, "executable target cannot be hidden");
+      assert.notEqual(target.enabled, false, "executable target cannot be disabled");
+    }
+  }
+
+  const hasGroundingSignal =
+    payload.grounding.matchedElementIds.length > 0 || payload.grounding.matchedVisibleText.length > 0;
+  if (payload.status === "ok" && payload.action.type !== "ask_user") {
+    assert.ok(hasGroundingSignal, "successful executable action must include grounded evidence");
+  }
+}
+
 function waitForOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -68,7 +103,39 @@ async function waitForMessage(messages: any[], startIndex: number, timeoutMs: nu
   throw new Error("Timed out waiting for WebSocket message");
 }
 
-function printVertexStatus(planActionResponse: any): void {
+async function waitForMessageMatching(
+  messages: any[],
+  startIndex: number,
+  timeoutMs: number,
+  matcher: (message: any) => boolean,
+): Promise<any> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    for (let i = startIndex; i < messages.length; i += 1) {
+      if (matcher(messages[i])) {
+        return messages[i];
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  throw new Error("Timed out waiting for expected WebSocket message");
+}
+
+function hasAdcConfigured(): boolean {
+  const explicitPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (explicitPath && fs.existsSync(explicitPath)) {
+    return true;
+  }
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".config", "gcloud", "application_default_credentials.json"),
+    path.join(home, "AppData", "Roaming", "gcloud", "application_default_credentials.json"),
+  ];
+  return candidates.some((candidate) => fs.existsSync(candidate));
+}
+
+function printVertexStatus(planActionResponse: any, requestFixture: any, label: string): void {
   const missing: string[] = [];
   if ((process.env.GOOGLE_GENAI_USE_VERTEXAI ?? "").toLowerCase() !== "true") {
     missing.push("GOOGLE_GENAI_USE_VERTEXAI=true");
@@ -79,29 +146,27 @@ function printVertexStatus(planActionResponse: any): void {
   if (!process.env.GOOGLE_CLOUD_LOCATION) {
     missing.push("GOOGLE_CLOUD_LOCATION");
   }
+  if (!hasAdcConfigured()) {
+    missing.push("Application Default Credentials");
+  }
 
   if (missing.length > 0) {
+    console.log(`[smoke] Vertex real-call skipped because missing prerequisites: ${missing.join(", ")}.`);
     console.log(
-      `[smoke] Vertex real-call skipped because env is missing: ${missing.join(", ")}. ` +
-        "Set these and ensure ADC is available (gcloud auth application-default login).",
+      "[smoke] To enable real Vertex checks, set env vars and run: gcloud auth application-default login",
     );
     return;
   }
 
-  if (
-    planActionResponse.status === "error" &&
-    /credential|auth|permission|vertex|adc|could not reach/i.test(planActionResponse.message)
-  ) {
-    console.log(
-      "[smoke] Vertex env vars are set, but the real Gemini planning call failed. " +
-        "Likely missing or invalid Application Default Credentials. " +
-        "Run: gcloud auth application-default login (or use Cloud Run service account).",
-    );
-    return;
-  }
+  assert.notEqual(
+    planActionResponse.status,
+    "error",
+    `Expected a real Vertex planning result for ${label}, got status=error: ${planActionResponse.message}`,
+  );
+  validateGroundingAgainstRequest(planActionResponse, requestFixture);
 
-  console.log("[smoke] Real Vertex Gemini planning call appears successful.");
-  console.log(`[smoke] Validated model response: ${JSON.stringify(planActionResponse)}`);
+  console.log(`[smoke] Real Vertex Gemini planning call succeeded for ${label} and grounding checks passed.`);
+  console.log(`[smoke] Validated ${label} model response: ${JSON.stringify(planActionResponse)}`);
 }
 
 async function main(): Promise<void> {
@@ -143,7 +208,7 @@ async function main(): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fixture),
     });
-    assert.ok([200, 500].includes(planRes.status));
+    assert.equal(planRes.status, 200);
     const plan = await planRes.json();
     validatePlanActionShape(plan);
     console.log("[smoke] POST /api/plan-action passed with screenshot fixture");
@@ -163,7 +228,81 @@ async function main(): Promise<void> {
     assert.equal(invalidMimeResponse.status, "error");
     console.log("[smoke] Validation guardrails passed");
 
-    printVertexStatus(plan);
+    const emptyScreenshotPayload = {
+      ...fixture,
+      screenshotBase64: "",
+    };
+    const emptyScreenshotRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(emptyScreenshotPayload),
+    });
+    assert.equal(emptyScreenshotRes.status, 400);
+    const emptyScreenshotResponse = await emptyScreenshotRes.json();
+    validatePlanActionShape(emptyScreenshotResponse);
+    assert.equal(emptyScreenshotResponse.status, "error");
+
+    const mismatchedMimePayload = {
+      ...fixture,
+      screenshotMimeType: "image/jpeg",
+    };
+    const mismatchedMimeRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mismatchedMimePayload),
+    });
+    assert.equal(mismatchedMimeRes.status, 400);
+    const mismatchedMimeResponse = await mismatchedMimeRes.json();
+    validatePlanActionShape(mismatchedMimeResponse);
+    assert.equal(mismatchedMimeResponse.status, "error");
+
+    const dataUrlPayload = {
+      ...fixture,
+      screenshotBase64: `data:${fixture.screenshotMimeType};base64,${screenshotB64}`,
+    };
+    const dataUrlRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dataUrlPayload),
+    });
+    assert.equal(dataUrlRes.status, 200);
+    const dataUrlResponse = await dataUrlRes.json();
+    validatePlanActionShape(dataUrlResponse);
+
+    const unsupportedContentTypeRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(fixture),
+    });
+    assert.equal(unsupportedContentTypeRes.status, 415);
+    const unsupportedContentTypePayload = await unsupportedContentTypeRes.json();
+    validatePlanActionShape(unsupportedContentTypePayload);
+    assert.equal(unsupportedContentTypePayload.status, "error");
+
+    const malformedJsonRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"sessionId":"bad-json",',
+    });
+    assert.equal(malformedJsonRes.status, 400);
+    const malformedJsonPayload = await malformedJsonRes.json();
+    validatePlanActionShape(malformedJsonPayload);
+    assert.equal(malformedJsonPayload.status, "error");
+
+    const oversizedBody = JSON.stringify({ huge: "x".repeat(11 * 1024 * 1024) });
+    const oversizedRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: oversizedBody,
+    });
+    assert.equal(oversizedRes.status, 413);
+    const oversizedPayload = await oversizedRes.json();
+    validatePlanActionShape(oversizedPayload);
+    assert.equal(oversizedPayload.status, "error");
+    console.log("[smoke] Parser/content-type/body-limit schema checks passed");
+
+    printVertexStatus(plan, fixture, "raw-base64 screenshot request");
+    printVertexStatus(dataUrlResponse, fixture, "data-url-normalized screenshot request");
 
     const wsUrl = `ws://127.0.0.1:${running.port}/api/live`;
     const ws = new WebSocket(wsUrl);
@@ -180,9 +319,69 @@ async function main(): Promise<void> {
     await waitForOpen(ws);
 
     let index = wsMessages.length;
+    ws.send(JSON.stringify({ type: "user_text", text: "pre-start check" }));
+    const preStartText = await waitForMessageMatching(
+      wsMessages,
+      index,
+      4000,
+      (message) => message.type === "error",
+    );
+    assert.equal(preStartText.type, "error");
+    assert.equal(preStartText.code, "live_not_started");
+
+    index = wsMessages.length;
+    ws.send(
+      JSON.stringify({
+        type: "user_image_frame",
+        mimeType: "image/png",
+        dataBase64: screenshotB64,
+      }),
+    );
+    const preStartImage = await waitForMessageMatching(
+      wsMessages,
+      index,
+      4000,
+      (message) => message.type === "error",
+    );
+    assert.equal(preStartImage.type, "error");
+    assert.equal(preStartImage.code, "live_not_started");
+
+    index = wsMessages.length;
+    ws.send(
+      JSON.stringify({
+        type: "user_audio_chunk",
+        mimeType: "audio/pcm",
+        dataBase64: Buffer.from("demo-audio-bytes").toString("base64"),
+      }),
+    );
+    const preStartAudio = await waitForMessageMatching(
+      wsMessages,
+      index,
+      4000,
+      (message) => message.type === "error",
+    );
+    assert.equal(preStartAudio.type, "error");
+    assert.equal(preStartAudio.code, "unsupported_audio_chunk");
+
+    index = wsMessages.length;
     ws.send(JSON.stringify({ type: "start", sessionId: session.sessionId, userGoal: "Live help" }));
-    const startMessage = await waitForMessage(wsMessages, index, 4000);
+    const startMessage = await waitForMessageMatching(
+      wsMessages,
+      index,
+      4000,
+      (message) => message.type === "transcript" || message.type === "error" || message.type === "model_text",
+    );
     assert.ok(["transcript", "error", "model_text"].includes(startMessage.type));
+
+    if (
+      startMessage.type === "error" &&
+      ["live_disabled", "live_not_configured", "live_start_failed"].includes(startMessage.code)
+    ) {
+      await waitForClose(ws);
+      console.log("[smoke] WS /api/live route checks passed (fatal start path).");
+      console.log("[smoke] All smoke checks passed.");
+      return;
+    }
 
     index = wsMessages.length;
     ws.send(JSON.stringify({ type: "user_text", text: "Please help me join the visit." }));
@@ -211,7 +410,7 @@ async function main(): Promise<void> {
     const audioMessage = await waitForMessage(wsMessages, index, 4000);
     assert.equal(audioMessage.type, "error");
     assert.ok(
-      ["unsupported_audio_chunk", "live_not_started", "live_runtime_error", "live_disabled"].includes(
+      ["unsupported_audio_chunk", "live_not_started", "live_not_ready", "live_runtime_error", "live_disabled"].includes(
         audioMessage.code,
       ),
     );

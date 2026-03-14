@@ -6,7 +6,10 @@ import { SessionStore } from "../sessions";
 import { nowIso, sendJson } from "../utils";
 import { validatePlanActionRequest } from "../validation/requestValidation";
 
-function responseWithError(message: string, status: PlanActionResponse["status"] = "error"): PlanActionResponse {
+export function buildPlanActionErrorResponse(
+  message: string,
+  status: PlanActionResponse["status"] = "error",
+): PlanActionResponse {
   return {
     status,
     message,
@@ -33,7 +36,7 @@ export async function handlePlanAction(
   const validation = validatePlanActionRequest(body);
 
   if (!validation.ok) {
-    const payload = responseWithError(validation.message, "error");
+    const payload = buildPlanActionErrorResponse(validation.message, "error");
     sendJson(res, validation.statusCode, payload, requestId);
     return;
   }
@@ -68,5 +71,5 @@ export async function handlePlanAction(
     confidence: response.confidence,
   });
 
-  sendJson(res, response.status === "error" ? 500 : 200, response, requestId);
+  sendJson(res, 200, response, requestId);
 }

@@ -30,6 +30,9 @@ cd backend && npm install && cd ..
 Terminal 1 (backend):
 ```bash
 cd backend
+cp .env.example .env
+# Set GOOGLE_CLOUD_PROJECT=silvervisit-ai, GOOGLE_CLOUD_LOCATION=us-central1, ENABLE_LIVE_API=true
+gcloud auth application-default login
 npm run dev
 ```
 
@@ -59,9 +62,10 @@ Load extension in Chrome:
 
 ## Live Demo Flow
 1. In side panel, click `Start Live`.
-2. Click `Send Text + Current Frame` to send a text turn and image frame in one live session.
-3. Confirm model/transcript responses appear.
-4. Optional: click `Send Audio Probe` to verify graceful structured unsupported-audio handling.
+2. Wait for the live transcript to show `LIVE_READY`.
+3. Click `Send Text + Current Frame` to send a text turn and image frame in one live session.
+4. Confirm model/transcript responses appear.
+5. Optional: click `Send Audio Probe` to verify graceful structured unsupported-audio handling.
 
 ## Build and Checks
 Root frontend builds:

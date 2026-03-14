@@ -14,12 +14,22 @@ async function enablePanelOnActionClick() {
   try {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   } catch (error) {
-    console.error("Failed to configure side panel behavior", error);
+    console.error(`[SilverVisit] Failed to configure side panel behavior: ${toErrorMessage(error)}`);
   }
 }
 
 function toErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown extension error";
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }
 
 function isSnapshotResponse(
@@ -79,9 +89,18 @@ function parseCaptureDataUrl(dataUrl: string): ScreenshotCapture {
   }
 
   const mimeType = match[1].toLowerCase() as ScreenshotCapture["mimeType"];
-  const base64 = match[2];
+  const base64 = match[2].replace(/\s+/g, "");
   if (!base64) {
     throw new Error("Captured screenshot was empty.");
+  }
+
+  try {
+    const binary = atob(base64);
+    if (!binary || binary.length === 0) {
+      throw new Error("Screenshot decoded to empty bytes.");
+    }
+  } catch {
+    throw new Error("Captured screenshot is not valid base64 image data.");
   }
 
   return { mimeType, base64 };
@@ -123,6 +142,10 @@ async function collectContextWithScreenshot(): Promise<PageContextWithScreenshot
 
   const dataUrl = await captureVisibleTabScreenshot(tab.windowId);
   const screenshot = parseCaptureDataUrl(dataUrl);
+  console.info("[SilverVisit] Screenshot capture success", {
+    tabId: tab.tabId,
+    mimeType: screenshot.mimeType,
+  });
 
   return {
     tab,
@@ -181,6 +204,20 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
           return;
         }
 
+        case "PING_CONTENT_SCRIPT": {
+          const { response } = await sendToActiveTab({ type: "PING" });
+          if (!response.ok) {
+            respond({ ok: false, error: response.error });
+            return;
+          }
+          if (!isMessageResponse(response)) {
+            respond({ ok: false, error: "Content script returned an invalid ping response." });
+            return;
+          }
+          respond({ ok: true, message: response.message });
+          return;
+        }
+
         case "HIGHLIGHT": {
           const { response } = await sendToActiveTab({ type: "HIGHLIGHT", id: message.id });
           if (!response.ok) {
@@ -213,6 +250,9 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
           respond({ ok: false, error: `Unsupported background message type: ${String((message as { type?: string }).type)}` });
       }
     } catch (error) {
+      console.error(
+        `[SilverVisit] Background message failure type=${message.type} error=${toErrorMessage(error)}`,
+      );
       respond({
         ok: false,
         error: toErrorMessage(error),

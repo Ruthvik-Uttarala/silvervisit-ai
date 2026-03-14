@@ -13,12 +13,17 @@ npm run dev --workspace sandbox-portal
 Flow steps (stable IDs):
 - login
 - appointments
-- visit details
+- appointment details
 - camera permission (simulated)
 - microphone permission (simulated)
 - pre-call device test
 - waiting room
 - joined call
+
+Deterministic behavior notes:
+- Stage order is linear and guarded: `login -> appointments -> appointment details -> camera -> microphone -> device test -> waiting room -> joined call`.
+- `Restart Demo Flow` resets all inputs and returns to login for repeatable demo takes.
+- Planner-relevant IDs for proven happy-path controls are preserved.
 
 ## Extension
 Build:
@@ -37,10 +42,13 @@ Load unpacked extension from `frontend/extension/dist`.
 
 ### Side panel behavior
 - Captures active tab context and a real screenshot for each happy-path planning request.
+- Validates screenshot MIME and image bytes before planner/live submission.
 - Sends multimodal payload to backend planner.
 - Renders one grounded action at a time and executes safely.
 - Logs executed action details (including target IDs).
-- Provides live interaction controls using backend WebSocket (`start`, text+image frame, end).
+- Provides live interaction controls using backend WebSocket (`start`, wait for `LIVE_READY`, text+image frame, end).
+- Live state progression is explicit: `disconnected -> connecting -> socket connected (not ready) -> live ready`, with an `error` state for fatal start/runtime failures.
+- `Send Text + Current Frame` is blocked until `LIVE_READY` is confirmed.
 
 ## Local End-to-End
 1. Start backend (`backend/npm run dev`)

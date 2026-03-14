@@ -1,5 +1,5 @@
 import { PlanActionRequest, SessionStartRequest, UIElement, ValidationResult } from "../types";
-import { decodeBase64, isObject, safeString, toSafeObject } from "../utils";
+import { decodeBase64, isObject, safeString, sanitizeBase64, toSafeObject } from "../utils";
 
 export const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 export const MAX_SCREENSHOT_BYTES = 7 * 1024 * 1024;
@@ -9,6 +9,51 @@ export const MAX_ELEMENTS = 500;
 export const MAX_TEXT_FIELD_LENGTH = 1000;
 export const MAX_ELEMENT_TEXT_LENGTH = 500;
 export const MAX_FRAMES = 5;
+
+function isPng(buffer: Buffer): boolean {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (buffer.length < signature.length) {
+    return false;
+  }
+  return signature.every((byte, index) => buffer[index] === byte);
+}
+
+function isJpeg(buffer: Buffer): boolean {
+  return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+}
+
+function isWebp(buffer: Buffer): boolean {
+  if (buffer.length < 12) {
+    return false;
+  }
+  const riff = buffer.toString("ascii", 0, 4);
+  const webp = buffer.toString("ascii", 8, 12);
+  return riff === "RIFF" && webp === "WEBP";
+}
+
+export function detectImageMimeType(buffer: Buffer): "image/png" | "image/jpeg" | "image/webp" | null {
+  if (isPng(buffer)) {
+    return "image/png";
+  }
+  if (isJpeg(buffer)) {
+    return "image/jpeg";
+  }
+  if (isWebp(buffer)) {
+    return "image/webp";
+  }
+  return null;
+}
+
+function validateMimeMatchesBytes(mimeType: string, decoded: Buffer, fieldName: string): string | null {
+  const detected = detectImageMimeType(decoded);
+  if (!detected) {
+    return `${fieldName} is not a supported PNG, JPEG, or WEBP image payload`;
+  }
+  if (detected !== mimeType) {
+    return `${fieldName} does not match ${mimeType}; detected ${detected}`;
+  }
+  return null;
+}
 
 function validationError(statusCode: number, message: string): ValidationResult<never> {
   return { ok: false, statusCode, message };
@@ -174,7 +219,11 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
       if (decoded.length > MAX_SCREENSHOT_BYTES) {
         return validationError(400, `Screenshot exceeds max decoded size of ${MAX_SCREENSHOT_BYTES} bytes`);
       }
-      screenshotBase64 = body.screenshotBase64;
+      const mimeMismatchError = validateMimeMatchesBytes(screenshotMimeType, decoded, "screenshotBase64");
+      if (mimeMismatchError) {
+        return validationError(400, mimeMismatchError);
+      }
+      screenshotBase64 = sanitizeBase64(body.screenshotBase64);
     } catch (error) {
       return validationError(400, `Invalid screenshotBase64: ${(error as Error).message}`);
     }
@@ -200,10 +249,20 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
         if (decoded.length > MAX_SCREENSHOT_BYTES) {
           return validationError(400, `framesBase64[${i}] exceeds max decoded size of ${MAX_SCREENSHOT_BYTES} bytes`);
         }
+        const detectedFrameMime = detectImageMimeType(decoded);
+        if (!detectedFrameMime) {
+          return validationError(400, `framesBase64[${i}] is not a supported PNG, JPEG, or WEBP image payload`);
+        }
+        if (screenshotMimeType && detectedFrameMime !== screenshotMimeType) {
+          return validationError(
+            400,
+            `framesBase64[${i}] mime mismatch. Expected ${screenshotMimeType}, detected ${detectedFrameMime}`,
+          );
+        }
       } catch (error) {
         return validationError(400, `framesBase64[${i}] is invalid base64: ${(error as Error).message}`);
       }
-      framesBase64.push(frame);
+      framesBase64.push(sanitizeBase64(frame));
     }
   }
 

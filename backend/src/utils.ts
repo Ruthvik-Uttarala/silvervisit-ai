@@ -31,6 +31,30 @@ export function sendJson(res: ServerResponse, statusCode: number, payload: unkno
   res.end(JSON.stringify(payload));
 }
 
+export class HttpRequestError extends Error {
+  constructor(
+    public readonly code: "invalid_json" | "payload_too_large" | "unsupported_content_type" | "bad_request",
+    message: string,
+    public readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = "HttpRequestError";
+  }
+}
+
+export function assertJsonContentType(req: IncomingMessage): void {
+  const header = req.headers["content-type"];
+  const contentType = Array.isArray(header) ? header[0] : header;
+  const normalized = (contentType ?? "").toLowerCase();
+  if (!normalized.startsWith("application/json")) {
+    throw new HttpRequestError(
+      "unsupported_content_type",
+      "Unsupported Content-Type. Use application/json.",
+      415,
+    );
+  }
+}
+
 export async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -39,7 +63,11 @@ export async function readJsonBody(req: IncomingMessage, maxBytes: number): Prom
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buffer.length;
     if (total > maxBytes) {
-      throw new Error(`Request body exceeds maximum size of ${maxBytes} bytes`);
+      throw new HttpRequestError(
+        "payload_too_large",
+        `Request body exceeds maximum size of ${maxBytes} bytes`,
+        413,
+      );
     }
     chunks.push(buffer);
   }
@@ -52,7 +80,7 @@ export async function readJsonBody(req: IncomingMessage, maxBytes: number): Prom
   try {
     return JSON.parse(raw);
   } catch {
-    throw new Error("Invalid JSON body");
+    throw new HttpRequestError("invalid_json", "Invalid JSON body", 400);
   }
 }
 

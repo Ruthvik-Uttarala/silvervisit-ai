@@ -34,6 +34,25 @@ function isTextInput(element: HTMLElement): element is HTMLInputElement | HTMLTe
   return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
 }
 
+function isDisabledControl(element: HTMLElement): boolean {
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLOptionElement ||
+    element instanceof HTMLOptGroupElement ||
+    element instanceof HTMLFieldSetElement
+  ) {
+    return element.disabled;
+  }
+  return element.getAttribute("aria-disabled") === "true";
+}
+
+function isInteractableTarget(element: HTMLElement): boolean {
+  return isVisible(element) && !isDisabledControl(element);
+}
+
 function getRole(element: HTMLElement) {
   const explicitRole = element.getAttribute("role");
   if (explicitRole) {
@@ -430,6 +449,9 @@ export async function executeAction(action: ActionObject) {
       if (!target) {
         return { ok: false as const, error: `Could not find target ${action.targetId}.` };
       }
+      if (!isInteractableTarget(target)) {
+        return { ok: false as const, error: `Target ${action.targetId} is hidden or disabled.` };
+      }
       target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
       await delay(350);
       target.click();
@@ -443,6 +465,9 @@ export async function executeAction(action: ActionObject) {
       const target = resolveTargetElement(action.targetId);
       if (!target) {
         return { ok: false as const, error: `Could not find target ${action.targetId}.` };
+      }
+      if (!isInteractableTarget(target)) {
+        return { ok: false as const, error: `Target ${action.targetId} is hidden or disabled.` };
       }
       target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
       await delay(250);
