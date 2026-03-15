@@ -11,7 +11,9 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "smoke": "tsx scripts/smoke-test.ts",
-    "seed:firestore": "tsx scripts/seed-firestore.ts"
+    "seed:firestore": "tsx scripts/seed-firestore.ts",
+    "verify:cloud-run": "tsx scripts/verify-cloud-run.ts",
+    "secret:hygiene": "tsx scripts/check-secret-hygiene.ts"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0",

@@ -11,6 +11,7 @@ import type {
 } from "./lib/types";
 
 const CAPTURE_COOLDOWN_MS = 900;
+const SUPPORTED_LOCAL_PORT = "4173";
 let captureInFlight: Promise<string> | null = null;
 let lastCapturedAt = 0;
 let lastCaptureDataUrl: string | null = null;
@@ -59,6 +60,55 @@ async function getActiveTab(): Promise<ActiveTabInfo> {
     url: tab.url,
     title: tab.title,
   };
+}
+
+function isSupportedTelehealthUrl(url?: string): boolean {
+  if (!url) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1") {
+      return parsed.port === SUPPORTED_LOCAL_PORT;
+    }
+    return host.includes("silvervisit");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeUrlForMatch(url?: string): string {
+  if (!url) {
+    return "";
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+async function validateExecutionTab(expectedTabId?: number, expectedUrl?: string): Promise<string | null> {
+  const activeTab = await getActiveTab();
+  if (typeof expectedTabId === "number" && activeTab.tabId !== expectedTabId) {
+    return `Active tab changed before execution (expected tab ${expectedTabId}, found ${activeTab.tabId}).`;
+  }
+  if (typeof expectedUrl === "string" && expectedUrl.trim()) {
+    const expectedNormalized = normalizeUrlForMatch(expectedUrl);
+    const activeNormalized = normalizeUrlForMatch(activeTab.url);
+    if (expectedNormalized && activeNormalized && expectedNormalized !== activeNormalized) {
+      return `Active page changed before execution (${activeTab.url ?? "unknown URL"}).`;
+    }
+  }
+  if (!isSupportedTelehealthUrl(activeTab.url)) {
+    return `Execution blocked on unsupported page (${activeTab.url ?? "unknown URL"}). Return to the SilverVisit telehealth app.`;
+  }
+  return null;
 }
 
 async function ensureMessageChannel(tabId: number, message: ContentScriptMessage): Promise<ContentScriptResponse> {
@@ -249,6 +299,11 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
         }
 
         case "HIGHLIGHT": {
+          const mismatch = await validateExecutionTab(message.expectedTabId, message.expectedUrl);
+          if (mismatch) {
+            respond({ ok: false, error: mismatch });
+            return;
+          }
           const { response } = await sendToActiveTab({ type: "HIGHLIGHT", id: message.id });
           if (!response.ok) {
             respond({ ok: false, error: response.error });
@@ -263,6 +318,11 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
         }
 
         case "EXECUTE_ACTION": {
+          const mismatch = await validateExecutionTab(message.expectedTabId, message.expectedUrl);
+          if (mismatch) {
+            respond({ ok: false, error: mismatch });
+            return;
+          }
           const { response } = await sendToActiveTab(toContentScriptMessage(message.action));
           if (!response.ok) {
             respond({ ok: false, error: response.error });

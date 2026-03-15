@@ -154,3 +154,23 @@ backend/.env
 frontend/.env
 frontend/extension/.env
 sandbox-portal/.env
+.gcloud-tmp/
+backend/.gcloud-tmp/
+backend/.gcloud-tmp-access-token
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+service-account*.json
+firebase*service*.json
+google-credentials*.json
+backend/.env
+frontend/.env
+frontend/extension/.env
+frontend/sandbox-portal/.env

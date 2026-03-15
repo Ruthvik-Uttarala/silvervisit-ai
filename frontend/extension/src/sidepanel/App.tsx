@@ -20,11 +20,14 @@ import type {
 
 const DEFAULT_USER_GOAL = "Help me join my doctor appointment.";
 const TURN_COOLDOWN_MS = 900;
+const NO_PROGRESS_REPEAT_THRESHOLD = 2;
+const NO_PROGRESS_HARD_CAP = 4;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const SUPPORTED_LOCAL_PORT = "4173";
 
 type LiveStatus = "disconnected" | "connecting" | "socket_connected_not_ready" | "live_ready" | "error";
 type Tone = "info" | "success" | "warning" | "error";
+type SafetyState = "found_destination" | "opened_destination" | "ready_for_next_step" | "waiting_room" | "joined";
 
 interface FeedEntry {
   tone: Tone;
@@ -38,12 +41,28 @@ interface LiveEntry {
   time: string;
 }
 
+interface ActionHistoryEntry {
+  id: string;
+  turnId: string;
+  status: PlanActionResponse["status"];
+  actionType: ActionObject["type"];
+  targetId: string;
+  groundedIds: string[];
+  summary: string;
+  outcome?: string;
+  timestamp: string;
+}
+
 function nowLabel(): string {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function trimItems<T>(items: T[], max = 120): T[] {
   return items.length > max ? items.slice(items.length - max) : items;
+}
+
+function normalizeGoalKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 500);
 }
 
 function toErrorMessage(error: unknown): string {
@@ -116,6 +135,30 @@ function sanitizeImagePayload(mimeType: string, base64: string): string {
   return base64.trim().replace(/^data:[^;]+;base64,/i, "").replace(/\s+/g, "");
 }
 
+function buildSnapshotSignature(context: PageContextWithScreenshot): string {
+  const textSignature = context.snapshot.visibleText.slice(0, 20).join("|").slice(0, 1200);
+  const elementSignature = context.snapshot.elements
+    .slice(0, 35)
+    .map((item) => `${item.id}:${item.text}`)
+    .join("|")
+    .slice(0, 1400);
+  return `${context.snapshot.pageUrl}|${textSignature}|${elementSignature}`;
+}
+
+function inferSafetyState(
+  context: PageContextWithScreenshot,
+  fallback: SafetyState = "ready_for_next_step",
+): SafetyState {
+  const lines = context.snapshot.visibleText.join(" ").toLowerCase();
+  if (/\bjoined\b|\byou have joined\b|\bin call\b/.test(lines)) {
+    return "joined";
+  }
+  if (/\bwaiting room\b/.test(lines)) {
+    return "waiting_room";
+  }
+  return fallback;
+}
+
 async function sendBackgroundMessage<T extends BackgroundResponse>(message: BackgroundMessage): Promise<T> {
   const response = (await chrome.runtime.sendMessage(message)) as T;
   if (!response.ok) {
@@ -141,6 +184,11 @@ export default function App() {
   const [clickExecutions, setClickExecutions] = useState(0);
   const [typeExecutions, setTypeExecutions] = useState(0);
   const [latestTurnId, setLatestTurnId] = useState<string | null>(null);
+  const [safetyState, setSafetyState] = useState<SafetyState>("ready_for_next_step");
+  const [whatFound, setWhatFound] = useState("I am ready to inspect the current telehealth page.");
+  const [whatDoingNow, setWhatDoingNow] = useState("Waiting for your instruction.");
+  const [whatNext, setWhatNext] = useState("Speak or type your goal, then run one grounded step.");
+  const [actionHistory, setActionHistory] = useState<ActionHistoryEntry[]>([]);
 
   const turnLockRef = useRef(false);
   const lastTurnAtRef = useRef(0);
@@ -156,9 +204,37 @@ export default function App() {
   const micTurnIdRef = useRef("");
   const liveTurnSendGuardRef = useRef<Set<string>>(new Set());
   const audioChunkEvidenceRef = useRef<{ turnId: string; firstChunkSeen: boolean }>({ turnId: "", firstChunkSeen: false });
+  const scrollGuardRef = useRef<{ signature: string; direction: string; repeats: number }>({
+    signature: "",
+    direction: "down",
+    repeats: 0,
+  });
+  const noProgressBudgetRef = useRef<{
+    goalKey: string;
+    totalNoProgress: number;
+    samePatternRepeats: number;
+    lastPattern: string;
+    lastSignature: string;
+  }>({
+    goalKey: "",
+    totalNoProgress: 0,
+    samePatternRepeats: 0,
+    lastPattern: "",
+    lastSignature: "",
+  });
 
   const pushFeed = useCallback((tone: Tone, text: string) => {
     setFeed((prev) => trimItems([...prev, { tone, text, time: nowLabel() }]));
+  }, []);
+
+  const pushHistory = useCallback((entry: ActionHistoryEntry) => {
+    setActionHistory((prev) => trimItems([...prev, entry], 80));
+  }, []);
+
+  const updateHistoryOutcome = useCallback((id: string, outcome: string) => {
+    setActionHistory((prev) =>
+      prev.map((entry) => (entry.id === id ? { ...entry, outcome } : entry)),
+    );
   }, []);
 
   const pushLive = useCallback((entry: LiveEntry) => {
@@ -186,6 +262,9 @@ export default function App() {
       const shownUrl = tab.tab.url?.trim() || "unknown URL";
       const reason = `Unsupported page (${shownUrl}). Return to the SilverVisit telehealth app on ${SUPPORTED_LOCAL_PORT} to continue.`;
       setUnsupportedReason(reason);
+      setWhatFound(`Current page is unsupported: ${shownUrl}`);
+      setWhatDoingNow("Paused to avoid unsafe actions on a non-telehealth page.");
+      setWhatNext("Return to the SilverVisit telehealth app tab to continue.");
       return { ok: false, url: tab.tab.url };
     }
     setUnsupportedReason(null);
@@ -423,6 +502,8 @@ export default function App() {
     setIsRunningTurn(true);
     const turnId = crypto.randomUUID();
     setLatestTurnId(turnId);
+    setWhatDoingNow("Reviewing the current screen and preparing one safe action.");
+    setWhatNext("Please wait while I validate the next grounded step.");
     try {
       await getHealth();
       const support = await checkPageSupport();
@@ -433,16 +514,33 @@ export default function App() {
       setActiveFixture(run.fixture);
       const context = await collectContextWithScreenshot();
       setUnsupportedReason(null);
+      const safetyFromScreen = inferSafetyState(context);
+      setSafetyState(safetyFromScreen);
+      if (safetyFromScreen === "waiting_room") {
+        setWhatFound("You are in the waiting room, but not joined yet.");
+      } else if (safetyFromScreen === "joined") {
+        setWhatFound("I found evidence that you are joined to the visit.");
+      } else {
+        setWhatFound("I found the current telehealth page and grounded controls.");
+      }
 
       if (liveStatusRef.current === "live_ready") {
         const textKey = `${turnId}:user_text`;
         if (!liveTurnSendGuardRef.current.has(textKey)) {
           liveTurnSendGuardRef.current.add(textKey);
+          if (liveTurnSendGuardRef.current.size > 200) {
+            const first = liveTurnSendGuardRef.current.values().next().value as string | undefined;
+            if (first) liveTurnSendGuardRef.current.delete(first);
+          }
           sendLiveMessage({ type: "user_text", turnId, text: goal });
         }
         const imageKey = `${turnId}:user_image_frame`;
         if (!liveTurnSendGuardRef.current.has(imageKey)) {
           liveTurnSendGuardRef.current.add(imageKey);
+          if (liveTurnSendGuardRef.current.size > 200) {
+            const first = liveTurnSendGuardRef.current.values().next().value as string | undefined;
+            if (first) liveTurnSendGuardRef.current.delete(first);
+          }
           sendLiveMessage({
             type: "user_image_frame",
             turnId,
@@ -461,23 +559,156 @@ export default function App() {
         pageTitle: context.snapshot.pageTitle || context.tab.title,
         visibleText: context.snapshot.visibleText,
         elements: context.snapshot.elements,
+        requireScreenshot: true,
         screenshotMimeType: context.screenshot.mimeType,
         screenshotBase64: context.screenshot.base64,
         sandboxFixture: run.fixture,
       });
       setLatestPlan(plan);
+      setWhatFound(
+        plan.action.targetId
+          ? `I found grounded target ${plan.action.targetId}.`
+          : "I found the current page state but need clarification for a safe target.",
+      );
+      setWhatNext(plan.message);
       pushFeed(
         plan.status === "ok" ? "success" : plan.status === "need_clarification" ? "warning" : "error",
         `${plan.status}: ${describeAction(plan.action)} (turn ${turnId.slice(0, 8)})`,
       );
+      const historyId = crypto.randomUUID();
+      pushHistory({
+        id: historyId,
+        turnId,
+        status: plan.status,
+        actionType: plan.action.type,
+        targetId: plan.action.targetId ?? "none",
+        groundedIds: plan.grounding.matchedElementIds,
+        summary: plan.message,
+        timestamp: nowLabel(),
+      });
+
+      const goalKey = normalizeGoalKey(goal);
+      const snapshotSignature = buildSnapshotSignature(context);
+      const actionPattern = `${plan.action.type}:${plan.action.targetId ?? ""}:${plan.action.direction ?? ""}`;
+      if (noProgressBudgetRef.current.goalKey !== goalKey) {
+        noProgressBudgetRef.current = {
+          goalKey,
+          totalNoProgress: 0,
+          samePatternRepeats: 0,
+          lastPattern: "",
+          lastSignature: "",
+        };
+      }
+      const noProgressAction = plan.action.type === "scroll" || plan.action.type === "wait" || plan.action.type === "ask_user";
+      const sameEvidence = noProgressBudgetRef.current.lastSignature === snapshotSignature;
+      const samePattern = noProgressBudgetRef.current.lastPattern === actionPattern;
+      if (noProgressAction && sameEvidence) {
+        noProgressBudgetRef.current.totalNoProgress += 1;
+        noProgressBudgetRef.current.samePatternRepeats = samePattern
+          ? noProgressBudgetRef.current.samePatternRepeats + 1
+          : 1;
+      } else if (!sameEvidence) {
+        noProgressBudgetRef.current.totalNoProgress = 0;
+        noProgressBudgetRef.current.samePatternRepeats = 0;
+      }
+      noProgressBudgetRef.current.lastPattern = actionPattern;
+      noProgressBudgetRef.current.lastSignature = snapshotSignature;
+
+      if (
+        noProgressBudgetRef.current.samePatternRepeats >= NO_PROGRESS_REPEAT_THRESHOLD ||
+        noProgressBudgetRef.current.totalNoProgress >= NO_PROGRESS_HARD_CAP
+      ) {
+        const budgetMessage =
+          "I could not make progress after repeated safe retries, so I need your clarification before continuing.";
+        setLatestPlan({
+          ...plan,
+          status: "need_clarification",
+          action: { type: "ask_user" },
+          message: budgetMessage,
+          confidence: Math.min(plan.confidence, 0.3),
+        });
+        setWhatDoingNow("Stopping repeated retries to stay safe.");
+        setWhatNext("Please tell me which item to choose next.");
+        pushFeed("warning", budgetMessage);
+        updateHistoryOutcome(historyId, "Escalated to clarification due to repeated no-progress turns.");
+        await postSandboxRunEvent({
+          runId: run.runId,
+          step: "extension_turn",
+          eventType: "no_progress_escalation",
+          metadata: { turnId, totalNoProgress: noProgressBudgetRef.current.totalNoProgress },
+        }).catch(() => undefined);
+        return;
+      }
+
       if (plan.status === "ok" && canExecuteAction(plan.action)) {
+        setWhatDoingNow(
+          plan.action.targetId
+            ? `Executing ${plan.action.type} on grounded target ${plan.action.targetId}.`
+            : `Executing ${plan.action.type} as the next grounded step.`,
+        );
+        if (plan.action.type === "scroll") {
+          const direction = plan.action.direction ?? "down";
+          if (
+            scrollGuardRef.current.signature === snapshotSignature &&
+            scrollGuardRef.current.direction === direction
+          ) {
+            scrollGuardRef.current.repeats += 1;
+          } else {
+            scrollGuardRef.current = {
+              signature: snapshotSignature,
+              direction,
+              repeats: 0,
+            };
+          }
+          if (scrollGuardRef.current.repeats >= 2) {
+            const guardedPlan: PlanActionResponse = {
+              ...plan,
+              status: "need_clarification",
+              message: "Page evidence did not change after repeated scroll attempts. Clarification is needed.",
+              action: { type: "ask_user" },
+              confidence: Math.min(plan.confidence, 0.3),
+            };
+            setLatestPlan(guardedPlan);
+            pushFeed("warning", "Scroll guard stopped repeated unchanged scrolling. Ask for clarification.");
+            setWhatDoingNow("Stopping repeated scrolling to avoid loops.");
+            setWhatNext("Please clarify what to look for next on the page.");
+            updateHistoryOutcome(historyId, "Scroll guard blocked repeated unchanged evidence.");
+            await postSandboxRunEvent({
+              runId: run.runId,
+              step: "extension_turn",
+              eventType: "scroll_guard_blocked",
+              metadata: { turnId, direction },
+            }).catch(() => undefined);
+            return;
+          }
+        } else {
+          scrollGuardRef.current = { signature: "", direction: "down", repeats: 0 };
+        }
+
         const response = await sendBackgroundMessage<{ ok: true; message: string }>({
           type: plan.action.type === "highlight" && plan.action.targetId ? "HIGHLIGHT" : "EXECUTE_ACTION",
+          expectedTabId: context.tab.tabId,
+          expectedUrl: context.tab.url,
           ...(plan.action.type === "highlight" && plan.action.targetId ? { id: plan.action.targetId } : { action: plan.action }),
         } as BackgroundMessage);
         pushFeed("success", response.message);
+        updateHistoryOutcome(historyId, response.message);
+        if (safetyFromScreen === "waiting_room") {
+          setSafetyState("waiting_room");
+          setWhatNext("You are still in the waiting room. Continue only when provider is ready.");
+        } else if (safetyFromScreen === "joined") {
+          setSafetyState("joined");
+          setWhatNext("You are joined. You can now continue with visit tasks if needed.");
+        } else {
+          setSafetyState(plan.action.type === "highlight" ? "found_destination" : "opened_destination");
+          setWhatNext("Ready for the next safe grounded step.");
+        }
         if (plan.action.type === "click") setClickExecutions((v) => v + 1);
         if (plan.action.type === "type") setTypeExecutions((v) => v + 1);
+      } else if (plan.status !== "ok") {
+        setSafetyState("ready_for_next_step");
+        setWhatDoingNow("Paused for clarification to avoid guessing.");
+        setWhatNext("Please confirm the exact item or control you want.");
       }
       await postSandboxRunEvent({
         runId: run.runId,
@@ -486,12 +717,22 @@ export default function App() {
         metadata: { turnId, status: plan.status, actionType: plan.action.type },
       }).catch(() => undefined);
     } catch (error) {
-      pushFeed("error", toErrorMessage(error));
+      const message = toErrorMessage(error);
+      if (/screenshot|capture/i.test(message)) {
+        const screenshotMessage = `I can't continue because screenshot capture failed: ${message}`;
+        pushFeed("error", screenshotMessage);
+        setWhatDoingNow("Blocked because screenshot grounding is unavailable.");
+        setWhatNext("Return to the telehealth tab and try again.");
+      } else {
+        pushFeed("error", message);
+        setWhatDoingNow("Stopped due to a safe execution error.");
+        setWhatNext("Please review the message and retry when ready.");
+      }
     } finally {
       setIsRunningTurn(false);
       turnLockRef.current = false;
     }
-  }, [checkPageSupport, collectContextWithScreenshot, ensureSession, isRunningTurn, pushFeed, sendLiveMessage, userGoal]);
+  }, [checkPageSupport, collectContextWithScreenshot, ensureSession, isRunningTurn, pushFeed, pushHistory, sendLiveMessage, updateHistoryOutcome, userGoal]);
 
   useEffect(() => {
     void getHealth().catch(() => undefined);
@@ -532,6 +773,7 @@ export default function App() {
   }, [isRunningTurn, latestPlan?.status]);
 
   const liveStateLabel = liveStatus === "live_ready" ? "Live Ready" : liveStatus === "socket_connected_not_ready" ? "Waiting Ready" : liveStatus;
+  const safetyStateLabel = safetyState.replaceAll("_", " ");
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_#dbeafe,_#f8fafc_45%,_#f1f5f9)] text-slate-900">
@@ -548,6 +790,13 @@ export default function App() {
         <section className="rounded-3xl border border-slate-200 bg-white/95 p-5 shadow-xl shadow-slate-200/30">
           <h2 className="text-xl font-bold text-slate-950">Ask SilverVisit</h2>
           <p className="mt-1 text-sm text-slate-600">{statusText}</p>
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">State</p>
+            <p className="text-lg font-bold text-slate-900">{safetyStateLabel}</p>
+            <p className="mt-2 text-sm text-slate-700"><span className="font-semibold">What I found:</span> {whatFound}</p>
+            <p className="mt-1 text-sm text-slate-700"><span className="font-semibold">What I'm doing now:</span> {whatDoingNow}</p>
+            <p className="mt-1 text-sm text-slate-700"><span className="font-semibold">What you should do next:</span> {whatNext}</p>
+          </div>
           <div className="mt-4 rounded-2xl border border-slate-300 bg-slate-50 p-3">
             <div className="flex items-end gap-3">
               <textarea
@@ -599,6 +848,17 @@ export default function App() {
             <p>Latest turn ID: {latestTurnId ?? "N/A"}</p>
             <p>Latest action: {latestPlan ? describeAction(latestPlan.action) : "N/A"}</p>
             <p>Coverage: click={clickExecutions}, type={typeExecutions}</p>
+            <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-3">
+              {actionHistory.length === 0 ? (
+                <p className="text-xs text-slate-500">Grounded action history appears here.</p>
+              ) : (
+                actionHistory.map((entry) => (
+                  <p key={entry.id} className="text-xs text-slate-700">
+                    {entry.timestamp} turn={entry.turnId.slice(0, 8)} status={entry.status} action={entry.actionType} target={entry.targetId} grounded=[{entry.groundedIds.join(",")}] {entry.outcome ? `outcome=${entry.outcome}` : ""}
+                  </p>
+                ))
+              )}
+            </div>
             <div className="max-h-56 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-3">
               {liveEntries.length === 0 ? (
                 <p className="text-xs text-slate-500">Live event evidence appears here.</p>

@@ -50,6 +50,67 @@ npm run build
 npm run smoke
 ```
 
+## Cloud Run Deployment (Copy/Paste)
+Locked profile:
+- service: `silvervisit-backend`
+- region: `us-central1`
+- auth: `allow-unauthenticated`
+- timeout: `900s`
+- runtime port: `8080`
+
+Runtime contract source:
+- [backend/deploy/cloud-run.contract.json](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/deploy/cloud-run.contract.json)
+
+Deploy + post-deploy verification:
+```bash
+cd backend
+bash scripts/deploy-cloud-run.sh \
+  --service silvervisit-backend \
+  --project YOUR_GCP_PROJECT \
+  --region us-central1 \
+  --location us-central1 \
+  --timeout-seconds 900
+```
+
+PowerShell equivalent:
+```powershell
+cd backend
+.\scripts\deploy-cloud-run.ps1 `
+  -Service silvervisit-backend `
+  -Project YOUR_GCP_PROJECT `
+  -Region us-central1 `
+  -Location us-central1 `
+  -TimeoutSeconds 900
+```
+
+Run deployed verification manually:
+```bash
+cd backend
+npm run verify:cloud-run -- \
+  --base-url https://YOUR_SERVICE_URL.run.app \
+  --service silvervisit-backend \
+  --region us-central1 \
+  --project YOUR_GCP_PROJECT
+```
+
+Expected verifier proof output:
+- anonymous `GET /health` reachability
+- `/health` Google truth fields (Vertex/Live/model names/firestore/runtime)
+- `POST /api/session/start` success
+- `POST /api/plan-action` grounded response shape
+- `WS /api/live` contract evidence
+- deployed Cloud Run timeout = `900`
+- Node timeout diagnostics from `/health`
+- explicit manual browser-only live proof step when required
+
+## Secret Hygiene
+```bash
+cd backend
+npm run secret:hygiene
+```
+Expected output:
+- `[hygiene] no secrets detected in tracked files`
+
 ## Firestore API Prerequisite
 - In production mode, Firestore calls require the Cloud Firestore API to be enabled for `GOOGLE_CLOUD_PROJECT`.
 - If disabled, `/health` will show:

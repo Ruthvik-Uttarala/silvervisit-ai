@@ -8,6 +8,8 @@
 *.p12
 *.pfx
 application_default_credentials.json
+.gcloud-tmp/
+.gcloud-tmp-access-token
 
 # logs
 *.log

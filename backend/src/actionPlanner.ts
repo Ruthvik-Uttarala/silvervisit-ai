@@ -5,6 +5,8 @@ import {
   ACTION_TYPES,
   ActionObject,
   AppConfig,
+  NavigatorDestination,
+  ParsedNavigatorIntent,
   PlanActionRequest,
   PlanActionResponse,
   SessionEvent,
@@ -12,12 +14,21 @@ import {
 } from "./types";
 import { Logger } from "./logger";
 import { getVertexClient } from "./vertex";
+import { parseNavigatorIntent } from "./intentParser";
 import { clampConfidence, getActionFallback, sanitizeBase64, safeErrorMessage, safeString } from "./utils";
 
 const ACTION_TYPES_SET = new Set<string>(ACTION_TYPES);
 const DIRECTION_SET = new Set<string>(ACTION_DIRECTIONS);
 const AMOUNT_SET = new Set<string>(ACTION_AMOUNTS);
 const REQUIRED_TARGET_TYPES = new Set(["click", "type", "highlight"]);
+const PRECISE_DESTINATIONS = new Set<NavigatorDestination>([
+  "appointments",
+  "reports_results",
+  "notes_avs",
+  "messages",
+  "prescriptions",
+  "referrals",
+]);
 
 const ACTION_RESPONSE_SCHEMA = {
   type: "object",
@@ -231,7 +242,102 @@ function isInteractableElement(element: UIElement | undefined): boolean {
   return true;
 }
 
-function enforceGuardrails(candidate: PlanActionResponse, request: PlanActionRequest): PlanActionResponse {
+function normalizeComparable(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeTargetText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferDestinationFromTarget(target: UIElement): NavigatorDestination {
+  const source = normalizeTargetText(
+    [target.id, target.text, target.placeholder ?? "", target.value ?? ""].join(" "),
+  );
+  if (!source) {
+    return "unknown";
+  }
+  if (/\b(message|thread|inbox|secure message)\b/.test(source)) return "messages";
+  if (/\b(report|result|lab)\b/.test(source)) return "reports_results";
+  if (/\b(note|after visit|avs)\b/.test(source)) return "notes_avs";
+  if (/\b(prescription|medication|pharmacy)\b/.test(source)) return "prescriptions";
+  if (/\b(referral|referred)\b/.test(source)) return "referrals";
+  if (/\b(appointment|visit|join|waiting room|check in|echeck)\b/.test(source)) return "appointments";
+  if (/\b(help|support|caregiver|troubleshoot)\b/.test(source)) return "help";
+  return "unknown";
+}
+
+function hasAmbiguousInteractableTarget(target: UIElement, request: PlanActionRequest): boolean {
+  const targetText = normalizeTargetText(target.text);
+  if (!targetText) {
+    return false;
+  }
+  let candidates = 0;
+  for (const element of request.elements) {
+    if (element.id === target.id) {
+      continue;
+    }
+    if (!isInteractableElement(element)) {
+      continue;
+    }
+    if (normalizeTargetText(element.text) === targetText && normalizeTargetText(element.role) === normalizeTargetText(target.role)) {
+      candidates += 1;
+      if (candidates >= 1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function inferIdentityField(target: UIElement): "patient_name" | "patient_dob" | null {
+  const source = [
+    target.id,
+    target.text,
+    target.placeholder ?? "",
+    target.value ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (/(full name|patient name|name)/.test(source)) {
+    return "patient_name";
+  }
+  if (/(date of birth|dob|birth date|birthday)/.test(source)) {
+    return "patient_dob";
+  }
+  return null;
+}
+
+function hasJoinedEvidence(request: PlanActionRequest): boolean {
+  return request.visibleText.some((line) => /\bjoined\b|\bin call\b|\bvisit connected\b/i.test(line));
+}
+
+function hasIdentityConflict(request: PlanActionRequest, parsedIntent: ParsedNavigatorIntent): boolean {
+  if (!request.sandboxFixture) {
+    return false;
+  }
+  const fixture = request.sandboxFixture;
+  const nameConflict =
+    typeof parsedIntent.patientName === "string" &&
+    parsedIntent.patientName.trim().length > 0 &&
+    normalizeComparable(parsedIntent.patientName) !== normalizeComparable(fixture.patientName);
+  const dobConflict =
+    typeof parsedIntent.dob === "string" &&
+    parsedIntent.dob.trim().length > 0 &&
+    normalizeComparable(parsedIntent.dob) !== normalizeComparable(fixture.patientDob);
+  return nameConflict || dobConflict;
+}
+
+function enforceGuardrailsInternal(
+  candidate: PlanActionResponse,
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): PlanActionResponse {
   const elementMap = new Map(request.elements.map((element) => [element.id, element]));
 
   const response: PlanActionResponse = {
@@ -279,6 +385,32 @@ function enforceGuardrails(candidate: PlanActionResponse, request: PlanActionReq
     if (!response.grounding.matchedElementIds.includes(response.action.targetId)) {
       response.grounding.matchedElementIds.push(response.action.targetId);
     }
+
+    if (
+      REQUIRED_TARGET_TYPES.has(response.action.type) &&
+      hasAmbiguousInteractableTarget(target, request)
+    ) {
+      return buildAskUser(
+        "I found more than one possible match for that control, so I need clarification.",
+        "Multiple interactable controls share the same visible label and role.",
+      );
+    }
+
+    if (
+      PRECISE_DESTINATIONS.has(parsedIntent.destination) &&
+      REQUIRED_TARGET_TYPES.has(response.action.type)
+    ) {
+      const targetDestination = inferDestinationFromTarget(target);
+      if (
+        targetDestination !== "unknown" &&
+        targetDestination !== parsedIntent.destination
+      ) {
+        return buildAskUser(
+          "I found a control, but it appears to lead to a different section than you requested.",
+          `Target destination ${targetDestination} conflicts with requested destination ${parsedIntent.destination}.`,
+        );
+      }
+    }
   }
 
   if (response.action.type === "type" && !response.action.value) {
@@ -286,6 +418,19 @@ function enforceGuardrails(candidate: PlanActionResponse, request: PlanActionReq
       "I need the text to enter before continuing.",
       "The typing action did not include a grounded input value.",
     );
+  }
+
+  if (response.action.type === "type" && response.action.targetId) {
+    const target = elementMap.get(response.action.targetId);
+    if (target) {
+      const identityField = inferIdentityField(target);
+      if (identityField === "patient_name" && parsedIntent.patientName) {
+        response.action.value = parsedIntent.patientName;
+      }
+      if (identityField === "patient_dob" && parsedIntent.dob) {
+        response.action.value = parsedIntent.dob;
+      }
+    }
   }
 
   const hasGrounding =
@@ -310,10 +455,41 @@ function enforceGuardrails(candidate: PlanActionResponse, request: PlanActionReq
     response.grounding.matchedVisibleText = [];
   }
 
+  if (
+    response.action.type === "done" &&
+    request.sandboxFixture &&
+    request.sandboxFixture.portalState !== "joined" &&
+    !hasJoinedEvidence(request)
+  ) {
+    return buildAskUser(
+      "You are not fully joined yet. I will keep guiding the next safe step.",
+      "The screen is still in a pre-join lifecycle state without explicit joined evidence.",
+    );
+  }
+
+  if (hasIdentityConflict(request, parsedIntent) && response.action.type === "type") {
+    return buildAskUser(
+      "The provided name or date of birth does not match this portal account. Please confirm which patient profile to use.",
+      "User-provided identity conflicts with the active sandbox fixture, so auto-typing is blocked for safety.",
+    );
+  }
+
   return response;
 }
 
-function normalizeModelOutput(rawObject: Record<string, unknown>, request: PlanActionRequest): PlanActionResponse {
+export function enforcePlannerGuardrailsForTesting(
+  candidate: PlanActionResponse,
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): PlanActionResponse {
+  return enforceGuardrailsInternal(candidate, request, parsedIntent);
+}
+
+function normalizeModelOutput(
+  rawObject: Record<string, unknown>,
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): PlanActionResponse {
   const statusRaw = safeString(rawObject.status);
   const status: PlanActionResponse["status"] =
     statusRaw === "ok" || statusRaw === "need_clarification" || statusRaw === "error"
@@ -334,10 +510,14 @@ function normalizeModelOutput(rawObject: Record<string, unknown>, request: PlanA
     grounding,
   };
 
-  return enforceGuardrails(normalized, request);
+  return enforceGuardrailsInternal(normalized, request, parsedIntent);
 }
 
-function buildUserPayload(request: PlanActionRequest, recentHistory: SessionEvent[]): string {
+function buildUserPayload(
+  request: PlanActionRequest,
+  recentHistory: SessionEvent[],
+  parsedIntent: ParsedNavigatorIntent,
+): string {
   const payload = {
     task: "Pick exactly one best next UI action for a telehealth flow.",
     constraints: {
@@ -345,10 +525,14 @@ function buildUserPayload(request: PlanActionRequest, recentHistory: SessionEven
       noInventedIds: true,
       askUserIfAmbiguous: true,
       respectHiddenDisabled: true,
+      destinationCorrectness: true,
+      avoidPrematureJoined: true,
+      useUserProvidedIdentityWhenPresent: true,
     },
     context: {
       sessionId: request.sessionId,
       userGoal: request.userGoal,
+      parsedIntent,
       pageUrl: request.pageUrl,
       pageTitle: request.pageTitle,
       sandboxFixture: request.sandboxFixture,
@@ -362,6 +546,23 @@ function buildUserPayload(request: PlanActionRequest, recentHistory: SessionEven
 }
 
 export async function planNextAction(request: PlanActionRequest, context: PlannerContext): Promise<PlanActionResponse> {
+  const parsedIntent = parseNavigatorIntent(request.userGoal);
+
+  if (request.requireScreenshot && (!request.screenshotBase64 || !request.screenshotMimeType)) {
+    return buildAskUser(
+      "I can't continue because screenshot capture failed.",
+      "Screenshot-backed planning is required for this turn, but screenshot payload is missing.",
+      "error",
+    );
+  }
+
+  if (hasIdentityConflict(request, parsedIntent)) {
+    return buildAskUser(
+      "I found a mismatch between your provided patient details and the current portal account. Please confirm the correct identity before I continue.",
+      "Identity conflict detected between user-provided name/date of birth and active fixture context.",
+    );
+  }
+
   let client: any;
   try {
     client = getVertexClient(context.config) as any;
@@ -375,7 +576,7 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
 
   const userParts: any[] = [
     {
-      text: buildUserPayload(request, context.recentHistory),
+      text: buildUserPayload(request, context.recentHistory, parsedIntent),
     },
   ];
 
@@ -439,7 +640,7 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
       );
     }
 
-    return normalizeModelOutput(parsed, request);
+    return normalizeModelOutput(parsed, request, parsedIntent);
   } catch (error) {
     const errorMessage = safeErrorMessage(error);
     context.logger.error("Vertex action planning failed", {

@@ -1,4 +1,16 @@
-import { PlanActionRequest, SessionStartRequest, UIElement, ValidationResult } from "../types";
+import {
+  PlanActionRequest,
+  PortalLifecycleState,
+  SandboxAppointment,
+  SandboxMessageThread,
+  SandboxNoteAvs,
+  SandboxPrescription,
+  SandboxReferral,
+  SandboxReportResult,
+  SessionStartRequest,
+  UIElement,
+  ValidationResult,
+} from "../types";
 import { decodeBase64, isObject, safeString, sanitizeBase64, toSafeObject } from "../utils";
 
 export const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -9,6 +21,24 @@ export const MAX_ELEMENTS = 500;
 export const MAX_TEXT_FIELD_LENGTH = 1000;
 export const MAX_ELEMENT_TEXT_LENGTH = 500;
 export const MAX_FRAMES = 5;
+const ALLOWED_PORTAL_STATES = new Set<PortalLifecycleState>([
+  "pre_check_in",
+  "echeckin_in_progress",
+  "device_setup",
+  "waiting_room",
+  "provider_ready",
+  "joined",
+]);
+const ALLOWED_APPOINTMENT_STATUSES = new Set<SandboxAppointment["status"]>([
+  "upcoming",
+  "today",
+  "ready_to_join",
+  "waiting_room",
+  "completed",
+  "past",
+  "canceled",
+  "rescheduled",
+]);
 
 function isPng(buffer: Buffer): boolean {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -156,6 +186,248 @@ function validateSandboxFixture(input: unknown): {
   if (!Number.isFinite(seed) || seed <= 0) {
     return { ok: false, message: "sandboxFixture.seed must be a positive number." };
   }
+
+  const portalStateRaw = safeString(body.portalState);
+  const portalState: PortalLifecycleState = ALLOWED_PORTAL_STATES.has(portalStateRaw as PortalLifecycleState)
+    ? (portalStateRaw as PortalLifecycleState)
+    : "pre_check_in";
+  const portalNow = safeString(body.portalNow);
+
+  const appointments: SandboxAppointment[] = Array.isArray(body.appointments)
+    ? body.appointments
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .flatMap((item) => {
+          const status = safeString(item.status) as SandboxAppointment["status"];
+          const appointment: SandboxAppointment = {
+            appointmentId: safeString(item.appointmentId),
+            scheduledDateTime: safeString(item.scheduledDateTime),
+            joinWindowStart: safeString(item.joinWindowStart),
+            joinWindowEnd: safeString(item.joinWindowEnd),
+            status,
+            joinableNow: Boolean(item.joinableNow),
+            providerName: safeString(item.providerName),
+            specialty: safeString(item.specialty),
+            visitType: safeString(item.visitType),
+            locationLabel: safeString(item.locationLabel),
+            note: safeString(item.note) || undefined,
+          };
+
+          if (
+            !appointment.appointmentId ||
+            !appointment.scheduledDateTime ||
+            !appointment.joinWindowStart ||
+            !appointment.joinWindowEnd ||
+            !appointment.providerName ||
+            !appointment.specialty ||
+            !appointment.visitType ||
+            !appointment.locationLabel
+          ) {
+            return [];
+          }
+          if (!ALLOWED_APPOINTMENT_STATUSES.has(appointment.status)) {
+            return [];
+          }
+          return [appointment];
+        })
+    : [];
+
+  const preVisitTasks = Array.isArray(body.preVisitTasks)
+    ? body.preVisitTasks
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          taskId: safeString(item.taskId),
+          label: safeString(item.label),
+          required: Boolean(item.required),
+          completed: Boolean(item.completed),
+          section: safeString(item.section),
+        }))
+        .filter((item) => item.taskId && item.label && item.section)
+    : [];
+
+  const deviceChecks = Array.isArray(body.deviceChecks)
+    ? body.deviceChecks
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          checkId: safeString(item.checkId),
+          label: safeString(item.label),
+          required: Boolean(item.required),
+          passed: Boolean(item.passed),
+        }))
+        .filter((item) => item.checkId && item.label)
+    : [];
+
+  const supportPaths = Array.isArray(body.supportPaths)
+    ? body.supportPaths
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          pathId: safeString(item.pathId),
+          label: safeString(item.label),
+          description: safeString(item.description),
+          actionHint: safeString(item.actionHint),
+        }))
+        .filter((item) => item.pathId && item.label && item.description && item.actionHint)
+    : [];
+
+  const pastVisitSummaries = Array.isArray(body.pastVisitSummaries)
+    ? body.pastVisitSummaries
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          visitId: safeString(item.visitId),
+          completedDateTime: safeString(item.completedDateTime),
+          providerName: safeString(item.providerName),
+          specialty: safeString(item.specialty),
+          summaryTitle: safeString(item.summaryTitle),
+          summarySnippet: safeString(item.summarySnippet),
+        }))
+        .filter((item) => item.visitId && item.completedDateTime && item.providerName && item.specialty && item.summaryTitle)
+    : [];
+
+  const reportsResults: SandboxReportResult[] = Array.isArray(body.reportsResults)
+    ? body.reportsResults
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => {
+          const status: SandboxReportResult["status"] = safeString(item.status) === "pending" ? "pending" : "final";
+          return {
+            resultId: safeString(item.resultId),
+            appointmentId: safeString(item.appointmentId),
+            createdDateTime: safeString(item.createdDateTime),
+            providerName: safeString(item.providerName),
+            specialty: safeString(item.specialty),
+            topic: safeString(item.topic),
+            resultType: safeString(item.resultType),
+            status,
+            summaryTitle: safeString(item.summaryTitle),
+            summarySnippet: safeString(item.summarySnippet),
+          };
+        })
+        .filter(
+          (item) =>
+            item.resultId &&
+            item.appointmentId &&
+            item.createdDateTime &&
+            item.providerName &&
+            item.specialty &&
+            item.topic &&
+            item.resultType &&
+            item.summaryTitle,
+        )
+    : [];
+
+  const notesAvs: SandboxNoteAvs[] = Array.isArray(body.notesAvs)
+    ? body.notesAvs
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          noteId: safeString(item.noteId),
+          appointmentId: safeString(item.appointmentId),
+          completedDateTime: safeString(item.completedDateTime),
+          providerName: safeString(item.providerName),
+          specialty: safeString(item.specialty),
+          topic: safeString(item.topic),
+          summaryTitle: safeString(item.summaryTitle),
+          summarySnippet: safeString(item.summarySnippet),
+        }))
+        .filter(
+          (item) =>
+            item.noteId &&
+            item.appointmentId &&
+            item.completedDateTime &&
+            item.providerName &&
+            item.specialty &&
+            item.topic &&
+            item.summaryTitle,
+        )
+    : [];
+
+  const messageThreads: SandboxMessageThread[] = Array.isArray(body.messageThreads)
+    ? body.messageThreads
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => ({
+          threadId: safeString(item.threadId),
+          appointmentId: safeString(item.appointmentId) || undefined,
+          updatedDateTime: safeString(item.updatedDateTime),
+          providerName: safeString(item.providerName),
+          specialty: safeString(item.specialty),
+          topic: safeString(item.topic),
+          subject: safeString(item.subject),
+          preview: safeString(item.preview),
+          unreadCount: Math.max(0, Math.floor(Number(item.unreadCount) || 0)),
+        }))
+        .filter(
+          (item) =>
+            item.threadId &&
+            item.updatedDateTime &&
+            item.providerName &&
+            item.specialty &&
+            item.topic &&
+            item.subject &&
+            item.preview,
+        )
+    : [];
+
+  const prescriptions: SandboxPrescription[] = Array.isArray(body.prescriptions)
+    ? body.prescriptions
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => {
+          const statusRaw = safeString(item.status);
+          const status: SandboxPrescription["status"] =
+            statusRaw === "completed" || statusRaw === "stopped" ? statusRaw : "active";
+          return {
+            prescriptionId: safeString(item.prescriptionId),
+            appointmentId: safeString(item.appointmentId),
+            createdDateTime: safeString(item.createdDateTime),
+            providerName: safeString(item.providerName),
+            specialty: safeString(item.specialty),
+            topic: safeString(item.topic),
+            medicationName: safeString(item.medicationName),
+            dosage: safeString(item.dosage),
+            status,
+          };
+        })
+        .filter(
+          (item) =>
+            item.prescriptionId &&
+            item.appointmentId &&
+            item.createdDateTime &&
+            item.providerName &&
+            item.specialty &&
+            item.topic &&
+            item.medicationName &&
+            item.dosage,
+        )
+    : [];
+
+  const referrals: SandboxReferral[] = Array.isArray(body.referrals)
+    ? body.referrals
+        .filter((item): item is Record<string, unknown> => isObject(item))
+        .map((item) => {
+          const statusRaw = safeString(item.status);
+          const status: SandboxReferral["status"] =
+            statusRaw === "closed" || statusRaw === "scheduled" ? statusRaw : "open";
+          return {
+            referralId: safeString(item.referralId),
+            appointmentId: safeString(item.appointmentId),
+            createdDateTime: safeString(item.createdDateTime),
+            providerName: safeString(item.providerName),
+            specialty: safeString(item.specialty),
+            topic: safeString(item.topic),
+            referredTo: safeString(item.referredTo),
+            referralReason: safeString(item.referralReason),
+            status,
+          };
+        })
+        .filter(
+          (item) =>
+            item.referralId &&
+            item.appointmentId &&
+            item.createdDateTime &&
+            item.providerName &&
+            item.specialty &&
+            item.topic &&
+            item.referredTo &&
+            item.referralReason,
+        )
+    : [];
+
   const detailsChecklist = Array.isArray(body.detailsChecklist)
     ? body.detailsChecklist.filter((item): item is string => typeof item === "string")
     : [];
@@ -175,6 +447,18 @@ function validateSandboxFixture(input: unknown): {
       appointmentTimeText: safeString(body.appointmentTimeText),
       visitTitle: safeString(body.visitTitle),
       detailsChecklist,
+      portalNow,
+      portalState,
+      appointments,
+      preVisitTasks,
+      deviceChecks,
+      supportPaths,
+      pastVisitSummaries,
+      reportsResults,
+      notesAvs,
+      messageThreads,
+      prescriptions,
+      referrals,
     },
   };
 }
@@ -254,6 +538,7 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
 
   let screenshotBase64: string | undefined;
   let screenshotMimeType: string | undefined;
+  const requireScreenshot = body.requireScreenshot === true;
 
   if (body.screenshotBase64 !== undefined) {
     if (typeof body.screenshotBase64 !== "string") {
@@ -330,6 +615,17 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
     );
   }
 
+  if (body.requireScreenshot !== undefined && typeof body.requireScreenshot !== "boolean") {
+    return validationError(400, "requireScreenshot must be boolean when provided");
+  }
+
+  if (requireScreenshot && (!screenshotBase64 || !screenshotMimeType)) {
+    return validationError(
+      400,
+      "Screenshot is required for this planning turn, but screenshot capture data is missing or invalid.",
+    );
+  }
+
   const pageUrl = body.pageUrl === undefined ? undefined : safeString(body.pageUrl).slice(0, MAX_TEXT_FIELD_LENGTH);
   const pageTitle =
     body.pageTitle === undefined ? undefined : safeString(body.pageTitle).slice(0, MAX_TEXT_FIELD_LENGTH);
@@ -360,6 +656,7 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
       pageTitle,
       visibleText,
       elements: elements as UIElement[],
+      requireScreenshot,
       screenshotBase64,
       screenshotMimeType,
       framesBase64,

@@ -79,6 +79,48 @@ npm run build --workspace extension
   - waiting/joined status text
 - Restart increments seed deterministically.
 
+## Pre-Phase 5 Realism Notes
+- Sandbox is now a multi-section telehealth portal with:
+  - `Dashboard`
+  - `Upcoming Appointments`
+  - `Past Appointments`
+  - `Appointment Details`
+  - `eCheck-In`
+  - `Device Setup`
+  - `Virtual Waiting Room`
+  - `Reports / Results`
+  - `Notes / AVS`
+  - `Messages`
+  - `Prescriptions`
+  - `Referrals`
+  - `Help / Support`
+  - `After Visit Summary`
+- Backend intent extraction is lightweight and generic (no phrase whitelist):
+  - destination (`appointments`, `reports_results`, `notes_avs`, `messages`, `prescriptions`, `referrals`, `help`)
+  - user-provided identity (`name`, `DOB`)
+  - provider/specialty/topic/time cues
+- User-provided name and DOB are preferred for grounded form typing; conflicting identity triggers clarification instead of silent substitution.
+- Appointment disambiguation is deterministic and time-aware via fixture fields:
+  - `portalNow`
+  - `scheduledDateTime`
+  - `joinWindowStart`
+  - `joinWindowEnd`
+  - `status`
+  - `joinableNow`
+- Seeds `2` and `4` include adversarial ambiguity:
+  - multiple same-day appointments
+  - similar provider names
+  - one past/completed lookalike
+  - one not-yet-joinable card
+  - one joinable-now card
+- Below-the-fold required actions are intentionally present in eCheck-In and device setup to require grounded scrolling.
+- Help/caregiver support paths are real navigable flows:
+  - Need help joining
+  - Invite caregiver
+  - Call clinic
+  - Troubleshoot device
+  - Return to appointment
+
 ## Build and Verification
 Run:
 ```bash
@@ -88,10 +130,64 @@ cd backend && npm run build
 cd backend && npm run smoke
 ```
 
+## Cloud Run Deploy (Copy/Paste)
+Locked runtime contract:
+- service: `silvervisit-backend`
+- region: `us-central1`
+- auth: `allow-unauthenticated`
+- timeout: `900s`
+- port: `8080`
+- contract file: [backend/deploy/cloud-run.contract.json](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/deploy/cloud-run.contract.json)
+
+Deploy and verify:
+```bash
+cd backend
+bash scripts/deploy-cloud-run.sh \
+  --service silvervisit-backend \
+  --project YOUR_GCP_PROJECT \
+  --region us-central1 \
+  --location us-central1 \
+  --timeout-seconds 900
+```
+
+PowerShell equivalent:
+```powershell
+cd backend
+.\scripts\deploy-cloud-run.ps1 `
+  -Service silvervisit-backend `
+  -Project YOUR_GCP_PROJECT `
+  -Region us-central1 `
+  -Location us-central1 `
+  -TimeoutSeconds 900
+```
+
+Direct deployed verifier run (if you already have a URL):
+```bash
+cd backend
+npm run verify:cloud-run -- \
+  --base-url https://YOUR_SERVICE_URL.run.app \
+  --service silvervisit-backend \
+  --region us-central1 \
+  --project YOUR_GCP_PROJECT
+```
+
+Verifier output is judge-ready and includes:
+- deployed base URL, service, region
+- anonymous reachability proof (`GET /health` without auth)
+- Vertex/Gemini/Firestore runtime truth fields from `/health`
+- `/api/session/start` and `/api/plan-action` results
+- `/api/live` contract probe (`live_ready` or explicit live blocker)
+- deployed timeout verification (`900s`)
+- Node timeout diagnostics (`httpRequestTimeoutMs`, `httpHeadersTimeoutMs`, `httpKeepAliveTimeoutMs`)
+- explicit remaining manual browser proof step if live audio E2E is not possible from CLI
+
 ## Google Stack Evidence
 - **Planner call site**
   - [backend/src/actionPlanner.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/actionPlanner.ts)
   - Uses `client.models.generateContent` from `@google/genai` with Vertex config.
+- **Intent extraction**
+  - [backend/src/intentParser.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/intentParser.ts)
+  - Generic parser for destination, temporal cues, provider/topic, and user identity fields.
 - **Live call site**
   - [backend/src/liveSession.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/liveSession.ts)
   - Uses `client.live.connect` and forwards realtime `user_audio_chunk` / `audioStreamEnd`.
@@ -104,6 +200,9 @@ cd backend && npm run smoke
 - **Cloud Run deploy proof**
   - [backend/cloudbuild.yaml](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/cloudbuild.yaml)
   - [backend/scripts/deploy-cloud-run.sh](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/deploy-cloud-run.sh)
+  - [backend/scripts/deploy-cloud-run.ps1](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/deploy-cloud-run.ps1)
+  - [backend/scripts/verify-cloud-run.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/verify-cloud-run.ts)
+  - [backend/deploy/cloud-run.contract.json](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/deploy/cloud-run.contract.json)
   - [backend/Dockerfile](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/Dockerfile)
 
 ## Firestore Evidence
@@ -133,6 +232,11 @@ cd backend && npm run smoke
   - set `ENABLE_FIRESTORE=true` and either `FIRESTORE_EMULATOR_HOST` or valid ADC + `GOOGLE_CLOUD_PROJECT`.
   - if production mode returns `PERMISSION_DENIED` for Firestore API, enable:
     - `firestore.googleapis.com` for your project.
+- Deployment fails with auth errors:
+  - run `gcloud auth application-default login`
+  - verify required APIs are enabled: `run`, `cloudbuild`, `artifactregistry`, `aiplatform`, `firestore`
+- Secret hygiene check:
+  - run `cd backend && npm run secret:hygiene`
 - Mic denied:
   - allow extension microphone permission and retry.
 - Unsupported page warning:

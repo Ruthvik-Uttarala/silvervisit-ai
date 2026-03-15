@@ -36,3 +36,9 @@ Contains:
   - `POST /api/sandbox/run/event`
 - Stable IDs and linear flow preserved.
 - Visible persona/appointment data varies deterministically by seed.
+- Realism upgrade coverage:
+  - multi-section portal navigation (dashboard, upcoming, past, details, eCheck-In, device setup, waiting room, help, after-visit)
+  - time-aware appointment cards with join-window metadata
+  - adversarial same-day ambiguity in seeded fixtures
+  - support/caregiver return paths
+  - below-the-fold required tasks to force grounded scrolling behavior

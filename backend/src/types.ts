@@ -36,6 +36,7 @@ export interface PlanActionRequest {
   pageTitle?: string;
   visibleText: string[];
   elements: UIElement[];
+  requireScreenshot?: boolean;
   screenshotBase64?: string;
   screenshotMimeType?: string;
   framesBase64?: string[];
@@ -99,6 +100,9 @@ export interface AppConfig {
   enableFirestore: boolean;
   firestoreCollectionPrefix: string;
   maxRequestBytes: number;
+  httpRequestTimeoutMs: number;
+  httpHeadersTimeoutMs: number;
+  httpKeepAliveTimeoutMs: number;
 }
 
 export interface SessionEvent {
@@ -201,6 +205,155 @@ export type LiveServerMessage =
   | WsToolCallMessage
   | WsLiveReadyMessage;
 
+export type AppointmentStatus =
+  | "upcoming"
+  | "today"
+  | "ready_to_join"
+  | "waiting_room"
+  | "completed"
+  | "past"
+  | "canceled"
+  | "rescheduled";
+
+export type PortalLifecycleState =
+  | "pre_check_in"
+  | "echeckin_in_progress"
+  | "device_setup"
+  | "waiting_room"
+  | "provider_ready"
+  | "joined";
+
+export interface SandboxAppointment {
+  appointmentId: string;
+  scheduledDateTime: string;
+  joinWindowStart: string;
+  joinWindowEnd: string;
+  status: AppointmentStatus;
+  joinableNow: boolean;
+  providerName: string;
+  specialty: string;
+  visitType: string;
+  locationLabel: string;
+  note?: string;
+}
+
+export interface SandboxPreVisitTask {
+  taskId: string;
+  label: string;
+  required: boolean;
+  completed: boolean;
+  section: string;
+}
+
+export interface SandboxDeviceCheck {
+  checkId: string;
+  label: string;
+  required: boolean;
+  passed: boolean;
+}
+
+export interface SandboxSupportPath {
+  pathId: string;
+  label: string;
+  description: string;
+  actionHint: string;
+}
+
+export interface SandboxPastVisitSummary {
+  visitId: string;
+  completedDateTime: string;
+  providerName: string;
+  specialty: string;
+  summaryTitle: string;
+  summarySnippet: string;
+}
+
+export interface SandboxReportResult {
+  resultId: string;
+  appointmentId: string;
+  createdDateTime: string;
+  providerName: string;
+  specialty: string;
+  topic: string;
+  resultType: string;
+  status: "final" | "pending";
+  summaryTitle: string;
+  summarySnippet: string;
+}
+
+export interface SandboxNoteAvs {
+  noteId: string;
+  appointmentId: string;
+  completedDateTime: string;
+  providerName: string;
+  specialty: string;
+  topic: string;
+  summaryTitle: string;
+  summarySnippet: string;
+}
+
+export interface SandboxMessageThread {
+  threadId: string;
+  appointmentId?: string;
+  updatedDateTime: string;
+  providerName: string;
+  specialty: string;
+  topic: string;
+  subject: string;
+  preview: string;
+  unreadCount: number;
+}
+
+export interface SandboxPrescription {
+  prescriptionId: string;
+  appointmentId: string;
+  createdDateTime: string;
+  providerName: string;
+  specialty: string;
+  topic: string;
+  medicationName: string;
+  dosage: string;
+  status: "active" | "completed" | "stopped";
+}
+
+export interface SandboxReferral {
+  referralId: string;
+  appointmentId: string;
+  createdDateTime: string;
+  providerName: string;
+  specialty: string;
+  topic: string;
+  referredTo: string;
+  referralReason: string;
+  status: "open" | "scheduled" | "closed";
+}
+
+export type NavigatorDestination =
+  | "appointments"
+  | "reports_results"
+  | "notes_avs"
+  | "messages"
+  | "prescriptions"
+  | "referrals"
+  | "help"
+  | "unknown";
+
+export type NavigatorActionVerb = "join" | "open" | "show" | "send_message" | "unknown";
+
+export interface ParsedNavigatorIntent {
+  destination: NavigatorDestination;
+  actionVerb: NavigatorActionVerb;
+  patientName?: string;
+  dob?: string;
+  providerName?: string;
+  specialty?: string;
+  topic?: string;
+  explicitDate?: string;
+  explicitTime?: string;
+  temporalCues: string[];
+  rawGoal: string;
+}
+
 export interface SandboxFixtureContext {
   fixtureId: string;
   seed: number;
@@ -215,6 +368,18 @@ export interface SandboxFixtureContext {
   appointmentTimeText: string;
   visitTitle: string;
   detailsChecklist: string[];
+  portalNow: string;
+  portalState: PortalLifecycleState;
+  appointments: SandboxAppointment[];
+  preVisitTasks: SandboxPreVisitTask[];
+  deviceChecks: SandboxDeviceCheck[];
+  supportPaths: SandboxSupportPath[];
+  pastVisitSummaries: SandboxPastVisitSummary[];
+  reportsResults: SandboxReportResult[];
+  notesAvs: SandboxNoteAvs[];
+  messageThreads: SandboxMessageThread[];
+  prescriptions: SandboxPrescription[];
+  referrals: SandboxReferral[];
 }
 
 export interface SandboxRunStartRequest {

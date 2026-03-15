@@ -33,6 +33,9 @@ function logGoogleRuntimeConfiguration(): void {
     liveModel: config.geminiLiveModel,
     googleCloudProjectConfigured: config.googleCloudProject.length > 0,
     googleCloudLocation: config.googleCloudLocation,
+    httpRequestTimeoutMs: config.httpRequestTimeoutMs,
+    httpHeadersTimeoutMs: config.httpHeadersTimeoutMs,
+    httpKeepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
     firestoreConfigured: firestoreDiagnostics.configured,
     firestoreMode: firestoreDiagnostics.mode,
   });
@@ -160,9 +163,14 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
 }
 
 export function createAppServer(): { server: Server; wss: WebSocketServer } {
+  const config = loadConfig();
   const server = http.createServer((req, res) => {
     void handleHttpRequest(req, res);
   });
+  server.requestTimeout = config.httpRequestTimeoutMs;
+  server.headersTimeout = config.httpHeadersTimeoutMs;
+  server.keepAliveTimeout = config.httpKeepAliveTimeoutMs;
+  server.timeout = 0;
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -228,6 +236,12 @@ export async function startServer(port = loadConfig().port): Promise<RunningServ
   const address = server.address();
   const resolvedPort = typeof address === "object" && address ? address.port : port;
   logger.info("Server started", { port: resolvedPort });
+  logger.info("HTTP timeout configuration applied", {
+    requestTimeoutMs: config.httpRequestTimeoutMs,
+    headersTimeoutMs: config.httpHeadersTimeoutMs,
+    keepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
+    socketTimeoutMs: server.timeout,
+  });
 
   return {
     server,

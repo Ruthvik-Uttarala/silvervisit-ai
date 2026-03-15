@@ -3,6 +3,9 @@ import path from "node:path";
 import { AppConfig } from "./types";
 
 const DEFAULT_MAX_REQUEST_BYTES = 10 * 1024 * 1024;
+const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 0;
+const DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS = 65_000;
+const DEFAULT_HTTP_HEADERS_TIMEOUT_MS = 70_000;
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) {
@@ -25,6 +28,17 @@ function parsePort(value: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
     return 8080;
+  }
+  return parsed;
+}
+
+function parseNonNegativeInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return fallback;
   }
   return parsed;
 }
@@ -76,6 +90,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const useVertexAI = parseBool(resolvedEnv.GOOGLE_GENAI_USE_VERTEXAI, true);
   const googleCloudProject = (resolvedEnv.GOOGLE_CLOUD_PROJECT ?? "").trim();
   const googleCloudLocation = (resolvedEnv.GOOGLE_CLOUD_LOCATION ?? "global").trim() || "global";
+  const httpRequestTimeoutMs = parseNonNegativeInt(
+    resolvedEnv.HTTP_REQUEST_TIMEOUT_MS,
+    DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
+  );
+  const httpKeepAliveTimeoutMs = parseNonNegativeInt(
+    resolvedEnv.HTTP_KEEPALIVE_TIMEOUT_MS,
+    DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS,
+  );
+  const configuredHeadersTimeoutMs = parseNonNegativeInt(
+    resolvedEnv.HTTP_HEADERS_TIMEOUT_MS,
+    DEFAULT_HTTP_HEADERS_TIMEOUT_MS,
+  );
+  const httpHeadersTimeoutMs = Math.max(configuredHeadersTimeoutMs, httpKeepAliveTimeoutMs + 1_000);
 
   return {
     port: parsePort(resolvedEnv.PORT),
@@ -90,6 +117,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     enableFirestore: parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
     firestoreCollectionPrefix: (resolvedEnv.FIRESTORE_COLLECTION_PREFIX ?? "silvervisit").trim() || "silvervisit",
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
+    httpRequestTimeoutMs,
+    httpHeadersTimeoutMs,
+    httpKeepAliveTimeoutMs,
   };
 }
 

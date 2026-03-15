@@ -1,0 +1,27 @@
+{
+  "serviceName": "silvervisit-backend",
+  "region": "us-central1",
+  "publicUrl": "resolved-at-deploy-time",
+  "authMode": "allow-unauthenticated",
+  "runtime": {
+    "port": 8080,
+    "timeoutSeconds": 900
+  },
+  "requiredEnvironment": {
+    "GOOGLE_GENAI_USE_VERTEXAI": "true",
+    "GOOGLE_CLOUD_PROJECT": "required",
+    "GOOGLE_CLOUD_LOCATION": "required",
+    "GEMINI_ACTION_MODEL": "required",
+    "GEMINI_LIVE_MODEL": "required",
+    "ENABLE_LIVE_API": "true",
+    "ENABLE_FIRESTORE": "true",
+    "FIRESTORE_COLLECTION_PREFIX": "required"
+  },
+  "requiredGoogleApis": [
+    "run.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "aiplatform.googleapis.com",
+    "firestore.googleapis.com"
+  ]
+}
