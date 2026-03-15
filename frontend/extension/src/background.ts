@@ -10,6 +10,11 @@ import type {
   ScreenshotCapture,
 } from "./lib/types";
 
+const CAPTURE_COOLDOWN_MS = 900;
+let captureInFlight: Promise<string> | null = null;
+let lastCapturedAt = 0;
+let lastCaptureDataUrl: string | null = null;
+
 async function enablePanelOnActionClick() {
   try {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -107,27 +112,52 @@ function parseCaptureDataUrl(dataUrl: string): ScreenshotCapture {
 }
 
 async function captureVisibleTabScreenshot(windowId?: number): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const callback = (dataUrl?: string) => {
-      const lastError = chrome.runtime.lastError;
-      if (lastError) {
-        reject(new Error(lastError.message));
+  if (captureInFlight) {
+    return captureInFlight;
+  }
+
+  const now = Date.now();
+  if (lastCaptureDataUrl && now - lastCapturedAt < CAPTURE_COOLDOWN_MS) {
+    return lastCaptureDataUrl;
+  }
+
+  captureInFlight = new Promise<string>((resolve, reject) => {
+    const executeCapture = () => {
+      const callback = (dataUrl?: string) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          captureInFlight = null;
+          reject(new Error(lastError.message));
+          return;
+        }
+        if (!dataUrl) {
+          captureInFlight = null;
+          reject(new Error("Screenshot capture returned empty data."));
+          return;
+        }
+        lastCapturedAt = Date.now();
+        lastCaptureDataUrl = dataUrl;
+        captureInFlight = null;
+        resolve(dataUrl);
+      };
+
+      if (typeof windowId === "number") {
+        chrome.tabs.captureVisibleTab(windowId, { format: "png" }, callback);
         return;
       }
-      if (!dataUrl) {
-        reject(new Error("Screenshot capture returned empty data."));
-        return;
-      }
-      resolve(dataUrl);
+
+      chrome.tabs.captureVisibleTab({ format: "png" }, callback);
     };
 
-    if (typeof windowId === "number") {
-      chrome.tabs.captureVisibleTab(windowId, { format: "png" }, callback);
+    const delayMs = Math.max(0, CAPTURE_COOLDOWN_MS - (Date.now() - lastCapturedAt));
+    if (delayMs > 0) {
+      setTimeout(executeCapture, delayMs);
       return;
     }
-
-    chrome.tabs.captureVisibleTab({ format: "png" }, callback);
+    executeCapture();
   });
+
+  return captureInFlight;
 }
 
 async function collectContextWithScreenshot(): Promise<PageContextWithScreenshot> {

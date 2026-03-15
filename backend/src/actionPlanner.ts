@@ -351,6 +351,7 @@ function buildUserPayload(request: PlanActionRequest, recentHistory: SessionEven
       userGoal: request.userGoal,
       pageUrl: request.pageUrl,
       pageTitle: request.pageTitle,
+      sandboxFixture: request.sandboxFixture,
       visibleText: request.visibleText,
       elements: summarizeElements(request.elements),
       recentHistory,
@@ -400,6 +401,14 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
   }
 
   try {
+    context.logger.info("Invoking Gemini planner on Vertex AI", {
+      requestId: context.requestId,
+      sessionId: request.sessionId,
+      provider: "@google/genai",
+      vertexModeEnabled: context.config.useVertexAI,
+      model: context.config.geminiActionModel,
+    });
+
     const response: any = await client.models.generateContent({
       model: context.config.geminiActionModel,
       contents: [

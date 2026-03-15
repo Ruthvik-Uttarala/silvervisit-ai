@@ -1,58 +1,38 @@
-﻿## Frontend Workspace
+## Frontend Workspace
 
-This folder contains:
-- `sandbox-portal`: deterministic telehealth sandbox UI flow
-- `extension`: Chrome Manifest V3 side panel navigator
+Contains:
+- `sandbox-portal`: deterministic telehealth sandbox (data from backend Firestore routes)
+- `extension`: MV3 side panel UI Navigator
 
-## Sandbox Portal
-Run:
-```bash
-npm run dev --workspace sandbox-portal
-```
+## Extension UX
+- Default surface is intentionally simple:
+  - branded header
+  - one goal composer
+  - inline mic button
+  - one primary CTA (`Run One Grounded Step`)
+  - concise progress feed
+- Technical diagnostics/live raw logs are in **Developer Details** (collapsed by default).
 
-Flow steps (stable IDs):
-- login
-- appointments
-- appointment details
-- camera permission (simulated)
-- microphone permission (simulated)
-- pre-call device test
-- waiting room
-- joined call
+## Mic + Goal Behavior
+- Inline mic starts real `getUserMedia` capture.
+- Audio is converted to PCM16 mono 16kHz and streamed to backend `/api/live`.
+- Browser speech recognition helper updates goal text while speaking (UX assist only).
+- User can edit goal text before tapping the primary CTA.
 
-Deterministic behavior notes:
-- Stage order is linear and guarded: `login -> appointments -> appointment details -> camera -> microphone -> device test -> waiting room -> joined call`.
-- `Restart Demo Flow` resets all inputs and returns to login for repeatable demo takes.
-- Planner-relevant IDs for proven happy-path controls are preserved.
+## One-Turn Contract
+- One primary CTA click:
+  - one coordinated screenshot capture
+  - one planner request
+  - at most one grounded action execution
+- Duplicate submit protections:
+  - in-flight lock
+  - cooldown
+  - deduped live message IDs
+  - background screenshot capture guard
 
-## Extension
-Build:
-```bash
-npm run build --workspace extension
-```
-
-Load unpacked extension from `frontend/extension/dist`.
-
-### Required MV3 capabilities used
-- `sidePanel`
-- `tabs`
-- `activeTab`
-- `scripting`
-- host access via `<all_urls>`
-
-### Side panel behavior
-- Captures active tab context and a real screenshot for each happy-path planning request.
-- Validates screenshot MIME and image bytes before planner/live submission.
-- Sends multimodal payload to backend planner.
-- Renders one grounded action at a time and executes safely.
-- Logs executed action details (including target IDs).
-- Provides live interaction controls using backend WebSocket (`start`, wait for `LIVE_READY`, text+image frame, end).
-- Live state progression is explicit: `disconnected -> connecting -> socket connected (not ready) -> live ready`, with an `error` state for fatal start/runtime failures.
-- `Send Text + Current Frame` is blocked until `LIVE_READY` is confirmed.
-
-## Local End-to-End
-1. Start backend (`backend/npm run dev`)
-2. Start sandbox (`npm run dev --workspace sandbox-portal`)
-3. Build extension (`npm run build --workspace extension`)
-4. Load unpacked extension from `frontend/extension/dist`
-5. Open sandbox in a tab and use side panel to run guided steps
+## Sandbox
+- Fetches fixture/run context from backend routes:
+  - `POST /api/sandbox/run/start`
+  - `POST /api/sandbox/run/event`
+- Stable IDs and linear flow preserved.
+- Visible persona/appointment data varies deterministically by seed.

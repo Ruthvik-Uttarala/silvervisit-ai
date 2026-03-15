@@ -50,8 +50,18 @@ export interface SessionStartResponse {
 export interface HealthResponse {
   ok: boolean;
   service: string;
+  useVertexAI: boolean;
+  liveEnabled: boolean;
   liveApiConfigured: boolean;
   vertexConfigured: boolean;
+  plannerModel: string;
+  liveModel: string;
+  googleCloudProjectConfigured: boolean;
+  googleCloudLocation: string;
+  firestoreConfigured: boolean;
+  firestoreMode: "emulator" | "production" | "disabled";
+  firestoreRuntimeReady: boolean;
+  firestoreLastError: string | null;
 }
 
 export interface PlanActionRequest {
@@ -65,6 +75,7 @@ export interface PlanActionRequest {
   screenshotMimeType?: string;
   framesBase64?: string[];
   allowNonInteractableGuidance?: boolean;
+  sandboxFixture?: SandboxFixtureContext;
 }
 
 export interface ActionObject {
@@ -95,6 +106,29 @@ export interface ActiveTabInfo {
   windowId?: number;
   url?: string;
   title?: string;
+}
+
+export interface SandboxFixtureContext {
+  fixtureId: string;
+  seed: number;
+  patientName: string;
+  patientDob: string;
+  loginSecret: string;
+  doctorName: string;
+  appointmentType: string;
+  clinicLabel: string;
+  waitingRoomState: string;
+  clinicianReadyState: string;
+  appointmentTimeText: string;
+  visitTitle: string;
+  detailsChecklist: string[];
+}
+
+export interface SandboxRunStartResponse {
+  runId: string;
+  seed: number;
+  fixture: SandboxFixtureContext;
+  startedAt: string;
 }
 
 export type BackgroundMessage =

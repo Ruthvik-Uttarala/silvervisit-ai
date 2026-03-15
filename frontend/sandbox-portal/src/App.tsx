@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type FlowStep =
   | "login"
@@ -9,6 +9,22 @@ type FlowStep =
   | "device-test"
   | "waiting-room"
   | "joined-call";
+
+interface DemoFixture {
+  fixtureId: string;
+  seed: number;
+  patientName: string;
+  patientDob: string;
+  loginSecret: string;
+  doctorName: string;
+  appointmentType: string;
+  clinicLabel: string;
+  waitingRoomState: string;
+  clinicianReadyState: string;
+  appointmentTimeText: string;
+  visitTitle: string;
+  detailsChecklist: string[];
+}
 
 const STEP_ORDER: FlowStep[] = [
   "login",
@@ -43,35 +59,207 @@ const NEXT_STEP: Record<FlowStep, FlowStep | null> = {
   "joined-call": null,
 };
 
+const FIXTURE_SEED_QUERY_PARAM = "seed";
+const FIXTURE_SEED_STORAGE_KEY = "silvervisit:sandbox-seed";
+const DEFAULT_SEED = 1;
+const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
+
+function getBackendBaseUrl(): string {
+  const configured = import.meta.env.VITE_BACKEND_BASE_URL?.trim();
+  return configured && configured.length > 0 ? configured : DEFAULT_BACKEND_BASE_URL;
+}
+
 function stepLabel(step: FlowStep) {
   return STEP_LABELS[step];
 }
 
+function normalizeSeed(raw: string | null): number | null {
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const integer = Math.floor(Math.abs(parsed));
+  if (integer <= 0) {
+    return null;
+  }
+  return integer;
+}
+
+function resolveInitialSeed(): number {
+  const url = new URL(window.location.href);
+  const seedFromUrl = normalizeSeed(url.searchParams.get(FIXTURE_SEED_QUERY_PARAM));
+  if (seedFromUrl) {
+    return seedFromUrl;
+  }
+
+  const seedFromStorage = normalizeSeed(window.localStorage.getItem(FIXTURE_SEED_STORAGE_KEY));
+  if (seedFromStorage) {
+    return seedFromStorage;
+  }
+
+  return DEFAULT_SEED;
+}
+
+function persistSeed(seed: number): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set(FIXTURE_SEED_QUERY_PARAM, String(seed));
+  window.history.replaceState({}, "", url.toString());
+  window.localStorage.setItem(FIXTURE_SEED_STORAGE_KEY, String(seed));
+}
+
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Request failed with status ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
 export default function App() {
+  const [seed, setSeed] = useState<number>(() => resolveInitialSeed());
   const [step, setStep] = useState<FlowStep>("login");
   const [fullName, setFullName] = useState("");
   const [dob, setDob] = useState("");
   const [password, setPassword] = useState("");
   const [deviceNote, setDeviceNote] = useState("");
+  const [runId, setRunId] = useState<string | null>(null);
+  const [fixture, setFixture] = useState<DemoFixture | null>(null);
+  const [isLoadingFixture, setIsLoadingFixture] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    persistSeed(seed);
+  }, [seed]);
+
+  const initializeRun = async (nextSeed: number) => {
+    setIsLoadingFixture(true);
+    setLoadError(null);
+    try {
+      const response = await fetch(`${getBackendBaseUrl()}/api/sandbox/run/start`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          seed: nextSeed,
+          source: "sandbox",
+        }),
+      });
+      const payload = await parseJsonResponse<{
+        runId: string;
+        seed: number;
+        fixture: DemoFixture;
+      }>(response);
+      setRunId(payload.runId);
+      setFixture(payload.fixture);
+      setStep("login");
+      setFullName("");
+      setDob("");
+      setPassword("");
+      setDeviceNote("");
+    } catch (error) {
+      setFixture(null);
+      setRunId(null);
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingFixture(false);
+    }
+  };
+
+  useEffect(() => {
+    void initializeRun(seed);
+  }, [seed]);
 
   const progress = useMemo(() => {
     const currentIndex = STEP_ORDER.indexOf(step);
     return `${currentIndex + 1} / ${STEP_ORDER.length}`;
   }, [step]);
 
-  const canLogin = fullName.trim().length > 1 && dob.trim().length > 0 && password.trim().length > 2;
+  const canLogin =
+    fixture !== null &&
+    normalizeText(fullName) === normalizeText(fixture.patientName) &&
+    normalizeText(dob) === normalizeText(fixture.patientDob) &&
+    password.trim() === fixture.loginSecret;
+
+  const appendRunEvent = async (eventStep: FlowStep, eventType: string, metadata?: Record<string, unknown>) => {
+    if (!runId) {
+      return;
+    }
+    try {
+      await fetch(`${getBackendBaseUrl()}/api/sandbox/run/event`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          runId,
+          step: eventStep,
+          eventType,
+          metadata,
+        }),
+      });
+    } catch {
+      // Best-effort run evidence logging.
+    }
+  };
 
   const transitionStep = (target: FlowStep) => {
-    setStep((current) => (NEXT_STEP[current] === target ? target : current));
+    setStep((current) => {
+      if (NEXT_STEP[current] !== target) {
+        return current;
+      }
+      void appendRunEvent(target, "step_transition", { from: current, to: target });
+      return target;
+    });
   };
 
   const resetDemoFlow = () => {
-    setStep("login");
-    setFullName("");
-    setDob("");
-    setPassword("");
-    setDeviceNote("");
+    setSeed((current) => current + 1);
   };
+
+  if (isLoadingFixture) {
+    return (
+      <main className="min-h-screen bg-slate-100 text-slate-900">
+        <div className="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center px-5 py-8 lg:px-10">
+          <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h1 className="text-2xl font-bold text-slate-950">Loading deterministic fixture from backend...</h1>
+            <p className="mt-2 text-base text-slate-700">Connecting to Firestore-backed sandbox data.</p>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (loadError || !fixture) {
+    return (
+      <main className="min-h-screen bg-slate-100 text-slate-900">
+        <div className="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center px-5 py-8 lg:px-10">
+          <section className="w-full rounded-3xl border border-red-200 bg-white p-6 shadow-sm">
+            <h1 className="text-2xl font-bold text-red-800">Sandbox data unavailable</h1>
+            <p className="mt-2 text-base text-slate-700">
+              The backend Firestore route is required for this demo. Error: {loadError ?? "Unknown error"}
+            </p>
+            <button
+              type="button"
+              onClick={() => void initializeRun(seed)}
+              className="mt-4 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
+            >
+              Retry Backend Fixture Load
+            </button>
+          </section>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -80,10 +268,13 @@ export default function App() {
           <p className="text-sm font-bold uppercase tracking-[0.2em] text-sky-700">SilverVisit Telehealth Sandbox</p>
           <h1 className="mt-2 text-3xl font-bold text-slate-950">Telehealth Check-In Demo Flow</h1>
           <p className="mt-2 text-lg text-slate-700">
-            Deterministic path for UI Navigator demos: login to joined call, with stable actionable IDs on each step.
+            Firestore-backed deterministic path with stable actionable IDs and seeded visible persona variation.
           </p>
           <div className="mt-4 rounded-2xl bg-slate-100 px-4 py-3 text-base text-slate-800" id="flow-progress-label">
             Progress: {progress} ({stepLabel(step)})
+          </div>
+          <div className="mt-2 rounded-2xl bg-slate-100 px-4 py-2 text-sm text-slate-700" id="fixture-seed-label">
+            Fixture seed: {seed} | Fixture ID: {fixture.fixtureId}
           </div>
         </header>
 
@@ -92,7 +283,12 @@ export default function App() {
             <h2 className="text-2xl font-bold text-slate-950" id="login-step-title">
               Sign in to your patient portal
             </h2>
-            <p className="mt-2 text-base text-slate-700">Enter your information to continue to your appointment dashboard.</p>
+            <p className="mt-2 text-base text-slate-700">
+              Welcome {fixture.patientName}. Enter your information to continue to your appointment dashboard.
+            </p>
+            <p className="mt-2 text-sm text-slate-600">
+              Deterministic demo credentials for this seed: DOB {fixture.patientDob}, password {fixture.loginSecret}
+            </p>
 
             <div className="mt-5 grid gap-4">
               <label className="text-sm font-semibold text-slate-700" htmlFor="login-full-name-input">
@@ -141,8 +337,8 @@ export default function App() {
 
               <div id="login-status-text" role="status" aria-live="polite" className="text-sm text-slate-600">
                 {canLogin
-                  ? "You can continue to appointments."
-                  : "Fill name, date of birth, and password to continue."}
+                  ? "Credentials matched. You can continue to appointments."
+                  : "Enter the seeded full name, date of birth, and password to continue."}
               </div>
             </div>
           </section>
@@ -156,9 +352,11 @@ export default function App() {
             <p className="mt-2 text-base text-slate-700">Select the telehealth appointment to continue.</p>
 
             <article className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5" id="appointment-card-main">
-              <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Today at 2:30 PM</p>
-              <h3 className="mt-1 text-xl font-bold text-slate-950">Dr. Elena Carter - Follow-up Visit</h3>
-              <p className="mt-1 text-base text-slate-700">SilverVisit Video Room</p>
+              <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">{fixture.appointmentTimeText}</p>
+              <h3 className="mt-1 text-xl font-bold text-slate-950">
+                {fixture.doctorName} - {fixture.appointmentType}
+              </h3>
+              <p className="mt-1 text-base text-slate-700">{fixture.clinicLabel}</p>
               <button
                 id="open-appointment-details-btn"
                 type="button"
@@ -176,21 +374,19 @@ export default function App() {
             <h2 className="text-2xl font-bold text-slate-950" id="details-step-title">
               Appointment details
             </h2>
-            <p className="mt-2 text-base text-slate-700">
-              Complete check-in and join the visit when ready.
-            </p>
+            <p className="mt-2 text-base text-slate-700">Complete check-in and join the visit when ready.</p>
             <ul className="mt-4 list-disc space-y-2 pl-5 text-base text-slate-700" id="details-checklist-list">
-              <li>Insurance on file</li>
-              <li>Consent received</li>
-              <li>Estimated wait time: 3 minutes</li>
+              {fixture.detailsChecklist.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
             </ul>
-              <button
-                id="join-visit-btn"
-                type="button"
-                onClick={() => transitionStep("camera")}
-                className="mt-5 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white"
-              >
-                Join Video Visit
+            <button
+              id="join-visit-btn"
+              type="button"
+              onClick={() => transitionStep("camera")}
+              className="mt-5 rounded-2xl bg-sky-700 px-5 py-3 text-lg font-bold text-white"
+            >
+              Join Video Visit
             </button>
           </section>
         )}
@@ -201,15 +397,15 @@ export default function App() {
               Camera permission check
             </h2>
             <p className="mt-2 text-base text-slate-700">
-              Allow camera to continue. This is a simulated permission step for the demo.
+              Allow camera to continue. This remains a deterministic, judge-safe portal step.
             </p>
-              <button
-                id="camera-allow-btn"
-                type="button"
-                onClick={() => transitionStep("microphone")}
-                className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
-              >
-                Allow Camera
+            <button
+              id="camera-allow-btn"
+              type="button"
+              onClick={() => transitionStep("microphone")}
+              className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
+            >
+              Allow Camera
             </button>
           </section>
         )}
@@ -220,15 +416,15 @@ export default function App() {
               Microphone permission check
             </h2>
             <p className="mt-2 text-base text-slate-700">
-              Allow microphone to continue. This is a simulated permission step for the demo.
+              Allow microphone to continue. This remains a deterministic, judge-safe portal step.
             </p>
-              <button
-                id="microphone-allow-btn"
-                type="button"
-                onClick={() => transitionStep("device-test")}
-                className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
-              >
-                Allow Microphone
+            <button
+              id="microphone-allow-btn"
+              type="button"
+              onClick={() => transitionStep("device-test")}
+              className="mt-5 rounded-2xl bg-slate-900 px-5 py-3 text-lg font-bold text-white"
+            >
+              Allow Microphone
             </button>
           </section>
         )}
@@ -238,9 +434,7 @@ export default function App() {
             <h2 className="text-2xl font-bold text-slate-950" id="device-test-step-title">
               Pre-call device test
             </h2>
-            <p className="mt-2 text-base text-slate-700">
-              Type any quick note and continue to the waiting room.
-            </p>
+            <p className="mt-2 text-base text-slate-700">Type any quick note and continue to the waiting room.</p>
             <label htmlFor="device-note-input" className="mt-4 block text-sm font-semibold text-slate-700">
               Device test note
             </label>
@@ -269,7 +463,7 @@ export default function App() {
             </h2>
             <p className="mt-2 text-base text-slate-700">You are checked in. Enter the call when the clinician is ready.</p>
             <div id="waiting-room-status-text" role="status" className="mt-4 rounded-xl bg-amber-100 px-4 py-3 text-base text-amber-900">
-              Status: Waiting for Dr. Elena Carter...
+              {fixture.waitingRoomState}
             </div>
             <button
               id="enter-call-btn"
@@ -289,7 +483,7 @@ export default function App() {
             </h2>
             <p className="mt-2 text-base text-slate-700">The telehealth flow is complete for this demo.</p>
             <div id="joined-call-status-text" role="status" className="mt-4 rounded-xl bg-emerald-100 px-4 py-3 text-base text-emerald-900">
-              Status: Connected with Dr. Elena Carter.
+              {fixture.clinicianReadyState}
             </div>
             <button
               id="restart-demo-btn"

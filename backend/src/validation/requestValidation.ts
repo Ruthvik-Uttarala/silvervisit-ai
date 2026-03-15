@@ -122,6 +122,63 @@ function validateElement(raw: unknown, index: number): string | null {
   return null;
 }
 
+function validateSandboxFixture(input: unknown): {
+  ok: true;
+  value: PlanActionRequest["sandboxFixture"];
+} | {
+  ok: false;
+  message: string;
+} {
+  if (!isObject(input)) {
+    return { ok: false, message: "sandboxFixture must be an object when provided." };
+  }
+  const body = toSafeObject(input);
+  const requiredStringFields = [
+    "fixtureId",
+    "patientName",
+    "patientDob",
+    "loginSecret",
+    "doctorName",
+    "appointmentType",
+    "clinicLabel",
+    "waitingRoomState",
+    "clinicianReadyState",
+    "appointmentTimeText",
+    "visitTitle",
+  ] as const;
+  for (const field of requiredStringFields) {
+    const value = safeString(body[field]);
+    if (!value) {
+      return { ok: false, message: `sandboxFixture.${field} is required.` };
+    }
+  }
+  const seed = Number(body.seed);
+  if (!Number.isFinite(seed) || seed <= 0) {
+    return { ok: false, message: "sandboxFixture.seed must be a positive number." };
+  }
+  const detailsChecklist = Array.isArray(body.detailsChecklist)
+    ? body.detailsChecklist.filter((item): item is string => typeof item === "string")
+    : [];
+  return {
+    ok: true,
+    value: {
+      fixtureId: safeString(body.fixtureId),
+      seed: Math.floor(seed),
+      patientName: safeString(body.patientName),
+      patientDob: safeString(body.patientDob),
+      loginSecret: safeString(body.loginSecret),
+      doctorName: safeString(body.doctorName),
+      appointmentType: safeString(body.appointmentType),
+      clinicLabel: safeString(body.clinicLabel),
+      waitingRoomState: safeString(body.waitingRoomState),
+      clinicianReadyState: safeString(body.clinicianReadyState),
+      appointmentTimeText: safeString(body.appointmentTimeText),
+      visitTitle: safeString(body.visitTitle),
+      detailsChecklist,
+    },
+  };
+}
+
 export function validateSessionStartRequest(payload: unknown): ValidationResult<SessionStartRequest> {
   if (!isObject(payload)) {
     return validationError(400, "Request body must be a JSON object");
@@ -285,6 +342,15 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
     return validationError(400, "allowNonInteractableGuidance must be boolean when provided");
   }
 
+  let sandboxFixture: PlanActionRequest["sandboxFixture"] | undefined;
+  if (body.sandboxFixture !== undefined) {
+    const parsedFixture = validateSandboxFixture(body.sandboxFixture);
+    if (!parsedFixture.ok) {
+      return validationError(400, parsedFixture.message);
+    }
+    sandboxFixture = parsedFixture.value;
+  }
+
   return {
     ok: true,
     value: {
@@ -298,6 +364,7 @@ export function validatePlanActionRequest(payload: unknown): ValidationResult<Pl
       screenshotMimeType,
       framesBase64,
       allowNonInteractableGuidance: body.allowNonInteractableGuidance as boolean | undefined,
+      sandboxFixture,
     },
   };
 }

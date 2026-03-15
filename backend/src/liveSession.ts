@@ -2,10 +2,11 @@ import crypto from "node:crypto";
 import { IncomingMessage } from "node:http";
 import WebSocket from "ws";
 import { isVertexConfigured } from "./config";
+import { FirestoreRepository } from "./firestore";
 import { Logger } from "./logger";
 import { SessionStore } from "./sessions";
 import { AppConfig, LiveClientMessage, LiveServerMessage, WsErrorMessage } from "./types";
-import { decodeBase64, nowIso, safeErrorMessage, sanitizeBase64 } from "./utils";
+import { decodeBase64, nowIso, safeErrorMessage, safeString, sanitizeBase64 } from "./utils";
 import { getVertexClient } from "./vertex";
 import { ALLOWED_IMAGE_MIME_TYPES, detectImageMimeType } from "./validation/requestValidation";
 
@@ -13,10 +14,17 @@ interface LiveConnectionContext {
   config: AppConfig;
   logger: Logger;
   sessions: SessionStore;
+  firestore: FirestoreRepository;
   requestId: string;
 }
 
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
+const MAX_AUDIO_CHUNK_BYTES = 256 * 1024;
+const AUDIO_MIME_PREFIX = "audio/pcm";
+
+function optionalTurnId(turnId?: string): Record<string, string> {
+  return typeof turnId === "string" && turnId.trim().length > 0 ? { turnId: turnId.trim() } : {};
+}
 
 function sendMessage(ws: WebSocket, message: LiveServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
@@ -150,6 +158,38 @@ async function sendImageTurn(connection: any, mimeType: string, dataBase64: stri
   throw new Error("Gemini Live session object does not support image input methods.");
 }
 
+async function sendAudioRealtimeInput(
+  connection: any,
+  payload: {
+    mimeType?: string;
+    dataBase64?: string;
+    audioStreamEnd?: boolean;
+  },
+): Promise<void> {
+  if (typeof connection?.sendRealtimeInput !== "function") {
+    throw new Error("Gemini Live session object does not support realtime audio input.");
+  }
+
+  if (payload.audioStreamEnd && !payload.dataBase64) {
+    await connection.sendRealtimeInput({
+      audioStreamEnd: true,
+    });
+    return;
+  }
+
+  if (!payload.dataBase64 || !payload.mimeType) {
+    throw new Error("Audio payload missing required mimeType or dataBase64.");
+  }
+
+  await connection.sendRealtimeInput({
+    audio: {
+      mimeType: payload.mimeType,
+      data: sanitizeBase64(payload.dataBase64),
+    },
+    audioStreamEnd: payload.audioStreamEnd === true ? true : undefined,
+  });
+}
+
 async function closeLiveConnection(connection: any): Promise<void> {
   if (!connection) {
     return;
@@ -169,6 +209,18 @@ export function handleLiveSocketConnection(
   let liveStarted = false;
   let liveReady = false;
   let currentSessionId: string = crypto.randomUUID();
+  const processedMessageIds = new Set<string>();
+
+  const persistLiveEvent = (eventType: string, payload?: Record<string, unknown>) => {
+    void context.firestore.recordLiveEvent(currentSessionId, eventType, payload).catch((error: unknown) => {
+      context.logger.warn("Failed to persist live event to Firestore", {
+        requestId: context.requestId,
+        sessionId: currentSessionId,
+        eventType,
+        error: safeErrorMessage(error),
+      });
+    });
+  };
 
   sendMessage(ws, {
     type: "transcript",
@@ -211,6 +263,9 @@ export function handleLiveSocketConnection(
         role: "model",
         text: snippet,
       });
+      persistLiveEvent("model_text", {
+        text: snippet.slice(0, 500),
+      });
     }
   };
 
@@ -233,6 +288,10 @@ export function handleLiveSocketConnection(
       type: "transcript",
       role: "system",
       text: `Start request accepted for ${currentSessionId}. Initializing Gemini Live session.`,
+    });
+    persistLiveEvent("start_request", {
+      sessionId: currentSessionId,
+      userGoal: goal,
     });
 
     if (!context.config.enableLiveApi) {
@@ -264,6 +323,13 @@ export function handleLiveSocketConnection(
       }
 
       const client: any = getVertexClient(context.config);
+      context.logger.info("Starting Gemini Live session", {
+        requestId: context.requestId,
+        sessionId: currentSessionId,
+        provider: "@google/genai",
+        vertexModeEnabled: context.config.useVertexAI,
+        model: context.config.geminiLiveModel,
+      });
       liveStarted = true;
       liveReady = false;
       const connectPromise = client.live.connect({
@@ -272,9 +338,17 @@ export function handleLiveSocketConnection(
           onopen: () => {
             liveReady = true;
             sendMessage(ws, {
+              type: "live_ready",
+              sessionId: currentSessionId,
+              model: context.config.geminiLiveModel,
+            });
+            sendMessage(ws, {
               type: "transcript",
               role: "system",
-              text: "LIVE_READY Gemini Live session connected and ready for text + image turns.",
+              text: "LIVE_READY Gemini Live session connected and ready for text + image + audio turns.",
+            });
+            persistLiveEvent("live_ready", {
+              model: context.config.geminiLiveModel,
             });
           },
           onmessage: (event: unknown) => {
@@ -283,6 +357,9 @@ export function handleLiveSocketConnection(
           onerror: (error: unknown) => {
             liveReady = false;
             sendError(ws, "live_runtime_error", safeErrorMessage(error), true);
+            persistLiveEvent("live_runtime_error", {
+              error: safeErrorMessage(error),
+            });
           },
           onclose: () => {
             liveStarted = false;
@@ -292,6 +369,7 @@ export function handleLiveSocketConnection(
               role: "system",
               text: "Gemini Live session closed.",
             });
+            persistLiveEvent("live_closed");
           },
         },
       });
@@ -327,6 +405,10 @@ export function handleLiveSocketConnection(
       type: "transcript",
       role: "user",
       text: textMessage.text.trim(),
+    });
+    persistLiveEvent("user_text", {
+      ...optionalTurnId(textMessage.turnId),
+      text: textMessage.text,
     });
 
     if (!liveStarted || !liveSession) {
@@ -389,6 +471,10 @@ export function handleLiveSocketConnection(
       type: "live_event",
       summary: "user_image_frame",
     });
+    persistLiveEvent("user_image_frame", {
+      ...optionalTurnId(imageMessage.turnId),
+      mimeType: imageMessage.mimeType,
+    });
 
     if (!liveStarted || !liveSession) {
       sendError(ws, "live_not_started", "Send a start message before user_image_frame.", true);
@@ -409,25 +495,88 @@ export function handleLiveSocketConnection(
 
   const handleUserAudioChunk = async (message: LiveClientMessage): Promise<void> => {
     const audioMessage = message as Extract<LiveClientMessage, { type: "user_audio_chunk" }>;
+    if (!liveStarted || !liveSession) {
+      sendError(ws, "live_not_started", "Send a start message before user_audio_chunk.", true);
+      return;
+    }
+
+    if (!liveReady) {
+      sendError(ws, "live_not_ready", "Wait for LIVE_READY acknowledgement before sending user_audio_chunk.", true);
+      return;
+    }
+
+    if (audioMessage.audioStreamEnd === true && !audioMessage.dataBase64) {
+      try {
+        await sendAudioRealtimeInput(liveSession, {
+          audioStreamEnd: true,
+        });
+        context.sessions.appendHistory(currentSessionId, {
+          timestamp: nowIso(),
+          type: "live_event",
+          summary: "user_audio_stream_end",
+        });
+        persistLiveEvent("user_audio_stream_end", {
+          ...optionalTurnId(audioMessage.turnId),
+        });
+      } catch (error) {
+        sendError(ws, "live_send_audio_failed", safeErrorMessage(error), true);
+      }
+      return;
+    }
+
     if (typeof audioMessage.dataBase64 !== "string") {
       sendError(ws, "invalid_audio_payload", "user_audio_chunk must include dataBase64 string.", false);
       return;
     }
 
+    const mimeTypeRaw = typeof audioMessage.mimeType === "string" ? audioMessage.mimeType.trim().toLowerCase() : "";
+    if (!mimeTypeRaw || !mimeTypeRaw.startsWith(AUDIO_MIME_PREFIX)) {
+      sendError(
+        ws,
+        "invalid_audio_mime_type",
+        "user_audio_chunk mimeType must start with audio/pcm (for example audio/pcm;rate=16000).",
+        false,
+      );
+      return;
+    }
+
+    let decoded: Buffer;
     try {
-      decodeBase64(audioMessage.dataBase64);
+      decoded = decodeBase64(audioMessage.dataBase64);
     } catch (error) {
       sendError(ws, "invalid_audio_payload", `Audio data is not valid base64: ${safeErrorMessage(error)}`, false);
       return;
     }
+    if (decoded.byteLength > MAX_AUDIO_CHUNK_BYTES) {
+      sendError(
+        ws,
+        "invalid_audio_payload",
+        `Audio chunk exceeds max size of ${MAX_AUDIO_CHUNK_BYTES} bytes.`,
+        false,
+      );
+      return;
+    }
 
-    // TODO(raw-pcm): add explicit PCM framing + sample-rate contract for pass-through audio-in.
-    sendError(
-      ws,
-      "unsupported_audio_chunk",
-      "Raw audio chunk passthrough requires explicit PCM framing details. Use user_text or user_image_frame for demo flow.",
-      false,
-    );
+    context.sessions.appendHistory(currentSessionId, {
+      timestamp: nowIso(),
+      type: "live_event",
+      summary: "user_audio_chunk",
+    });
+    persistLiveEvent("user_audio_chunk", {
+      ...optionalTurnId(audioMessage.turnId),
+      mimeType: mimeTypeRaw,
+      bytes: decoded.byteLength,
+    });
+
+    try {
+      await sendAudioRealtimeInput(liveSession, {
+        mimeType: mimeTypeRaw,
+        dataBase64: audioMessage.dataBase64,
+        audioStreamEnd: audioMessage.audioStreamEnd === true ? true : undefined,
+      });
+    } catch (error) {
+      sendError(ws, "live_send_audio_failed", safeErrorMessage(error), true);
+    }
   };
 
   const handleEnd = async (): Promise<void> => {
@@ -451,6 +600,7 @@ export function handleLiveSocketConnection(
       role: "system",
       text: "Live session ended.",
     });
+    persistLiveEvent("end");
     ws.close(1000, "session ended");
   };
 
@@ -463,6 +613,25 @@ export function handleLiveSocketConnection(
       }
 
       try {
+        const messageId = safeString((message as any).messageId);
+        if (messageId) {
+          if (processedMessageIds.has(messageId)) {
+            sendMessage(ws, {
+              type: "transcript",
+              role: "system",
+              text: `Duplicate live message ignored: ${messageId}`,
+            });
+            persistLiveEvent("duplicate_message_ignored", { messageId, type: message.type });
+            return;
+          }
+          processedMessageIds.add(messageId);
+          if (processedMessageIds.size > 500) {
+            const [first] = processedMessageIds;
+            if (first) {
+              processedMessageIds.delete(first);
+            }
+          }
+        }
         switch (message.type) {
           case "start":
             await handleStart(message);

@@ -78,6 +78,8 @@ if [[ ${#ENV_VARS[@]} -eq 0 ]]; then
     "GEMINI_ACTION_MODEL=gemini-2.5-flash"
     "GEMINI_LIVE_MODEL=gemini-live-2.5-flash-native-audio"
     "ENABLE_LIVE_API=true"
+    "ENABLE_FIRESTORE=true"
+    "FIRESTORE_COLLECTION_PREFIX=silvervisit"
   )
 fi
 

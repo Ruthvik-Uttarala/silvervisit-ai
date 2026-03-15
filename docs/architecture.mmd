@@ -1,0 +1,56 @@
+flowchart LR
+  subgraph Browser["Chrome Browser"]
+    SP["MV3 Side Panel UI\n(frontend/extension/src/sidepanel/App.tsx)"]
+    BG["Background Worker\n(frontend/extension/src/background.ts)"]
+    CS["Content Script\n(frontend/extension/src/content.ts + lib/pageSnapshot.ts)"]
+    SB["Sandbox Telehealth Portal\n(frontend/sandbox-portal/src/App.tsx)"]
+  end
+
+  subgraph Backend["Node.js + TypeScript Backend"]
+    HTTP["HTTP Routes\n/health\n/api/session/start\n/api/session/:id\n/api/plan-action\n/api/sandbox/fixture\n/api/sandbox/run/start\n/api/sandbox/run/event"]
+    WS["WebSocket Route\n/api/live"]
+    PLAN["Action Planner\nbackend/src/actionPlanner.ts"]
+    LIVE["Live Session Bridge\nbackend/src/liveSession.ts"]
+    CFG["Config + Vertex Client\nbackend/src/config.ts + backend/src/vertex.ts"]
+    DB["Firestore Repository\nbackend/src/firestore.ts"]
+  end
+
+  subgraph Google["Google Cloud + Gemini"]
+    CR["Cloud Run Deployment\nbackend/Dockerfile + backend/cloudbuild.yaml"]
+    VERTEX["Vertex AI"]
+    GEMINI["Gemini Models\nPlanner + Live"]
+    FIRESTORE["Cloud Firestore\nfixtures + runs + sessions + events + action logs"]
+  end
+
+  SP -->|"COLLECT_CONTEXT_WITH_SCREENSHOT"| BG
+  BG -->|"active tab only screenshot"| SP
+  SP -->|"page state request"| BG
+  BG --> CS
+  CS -->|"URL/title/visibleText/elements"| BG
+  BG --> SP
+
+  SP -->|"POST /api/plan-action\n(text + structured page context + screenshot)"| HTTP
+  HTTP --> PLAN
+  PLAN --> CFG
+  CFG --> VERTEX
+  VERTEX --> GEMINI
+  HTTP --> DB
+  DB --> FIRESTORE
+  PLAN -->|"grounded next action JSON"| HTTP
+  HTTP --> SP
+  SP -->|"execute grounded click/type/highlight/scroll/wait"| BG
+  BG --> CS
+
+  SP -->|"WS /api/live\nstart/text/image/audio/end"| WS
+  WS --> LIVE
+  LIVE --> CFG
+  LIVE --> VERTEX
+  LIVE --> DB
+  VERTEX --> GEMINI
+  LIVE -->|"live_ready/model_text/transcript"| WS
+  WS --> SP
+
+  SB -->|"seeded fixture + run events"| HTTP
+  SB -. deterministic UI target .- CS
+  CR --> Backend
+  Backend --> CR

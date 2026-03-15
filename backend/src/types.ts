@@ -40,6 +40,7 @@ export interface PlanActionRequest {
   screenshotMimeType?: string;
   framesBase64?: string[];
   allowNonInteractableGuidance?: boolean;
+  sandboxFixture?: SandboxFixtureContext;
 }
 
 export interface ActionObject {
@@ -95,6 +96,8 @@ export interface AppConfig {
   geminiActionModel: string;
   geminiLiveModel: string;
   enableLiveApi: boolean;
+  enableFirestore: boolean;
+  firestoreCollectionPrefix: string;
   maxRequestBytes: number;
 }
 
@@ -116,27 +119,36 @@ export interface WsStartMessage {
   type: "start";
   sessionId?: string;
   userGoal?: string;
+  messageId?: string;
 }
 
 export interface WsUserTextMessage {
   type: "user_text";
   text: string;
+  messageId?: string;
+  turnId?: string;
 }
 
 export interface WsUserAudioChunkMessage {
   type: "user_audio_chunk";
-  dataBase64: string;
+  dataBase64?: string;
   mimeType?: string;
+  audioStreamEnd?: boolean;
+  messageId?: string;
+  turnId?: string;
 }
 
 export interface WsUserImageFrameMessage {
   type: "user_image_frame";
   dataBase64: string;
   mimeType: string;
+  messageId?: string;
+  turnId?: string;
 }
 
 export interface WsEndMessage {
   type: "end";
+  messageId?: string;
 }
 
 export type LiveClientMessage =
@@ -175,9 +187,52 @@ export interface WsToolCallMessage {
   args?: Record<string, unknown>;
 }
 
+export interface WsLiveReadyMessage {
+  type: "live_ready";
+  sessionId: string;
+  model: string;
+}
+
 export type LiveServerMessage =
   | WsErrorMessage
   | WsModelTextMessage
   | WsTranscriptMessage
   | WsPlannedActionMessage
-  | WsToolCallMessage;
+  | WsToolCallMessage
+  | WsLiveReadyMessage;
+
+export interface SandboxFixtureContext {
+  fixtureId: string;
+  seed: number;
+  patientName: string;
+  patientDob: string;
+  loginSecret: string;
+  doctorName: string;
+  appointmentType: string;
+  clinicLabel: string;
+  waitingRoomState: string;
+  clinicianReadyState: string;
+  appointmentTimeText: string;
+  visitTitle: string;
+  detailsChecklist: string[];
+}
+
+export interface SandboxRunStartRequest {
+  seed?: number;
+  source?: "sandbox" | "extension";
+  navigatorSessionId?: string;
+}
+
+export interface SandboxRunStartResponse {
+  runId: string;
+  seed: number;
+  fixture: SandboxFixtureContext;
+  startedAt: string;
+}
+
+export interface SandboxRunEventRequest {
+  runId: string;
+  step: string;
+  eventType: string;
+  metadata?: Record<string, unknown>;
+}

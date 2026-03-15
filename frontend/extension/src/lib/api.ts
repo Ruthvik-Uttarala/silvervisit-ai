@@ -2,6 +2,8 @@ import type {
   HealthResponse,
   PlanActionRequest,
   PlanActionResponse,
+  SandboxFixtureContext,
+  SandboxRunStartResponse,
   SessionStartRequest,
   SessionStartResponse,
 } from "./types";
@@ -68,4 +70,42 @@ export async function getHealth(): Promise<HealthResponse> {
     },
   });
   return parseJsonResponse<HealthResponse>(response);
+}
+
+export async function getSandboxFixture(seed?: number): Promise<{ seed: number; fixture: SandboxFixtureContext }> {
+  const search = typeof seed === "number" && Number.isFinite(seed) ? `?seed=${Math.floor(Math.abs(seed))}` : "";
+  const response = await fetch(`${getBackendBaseUrl()}/api/sandbox/fixture${search}`, {
+    method: "GET",
+    headers: {
+      "X-Request-Id": crypto.randomUUID(),
+    },
+  });
+  return parseJsonResponse<{ seed: number; fixture: SandboxFixtureContext }>(response);
+}
+
+export async function startSandboxRun(payload: {
+  seed?: number;
+  source: "sandbox" | "extension";
+  navigatorSessionId?: string;
+}): Promise<SandboxRunStartResponse> {
+  const response = await fetch(`${getBackendBaseUrl()}/api/sandbox/run/start`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<SandboxRunStartResponse>(response);
+}
+
+export async function postSandboxRunEvent(payload: {
+  runId: string;
+  step: string;
+  eventType: string;
+  metadata?: Record<string, unknown>;
+}): Promise<{ ok: boolean }> {
+  const response = await fetch(`${getBackendBaseUrl()}/api/sandbox/run/event`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<{ ok: boolean }>(response);
 }

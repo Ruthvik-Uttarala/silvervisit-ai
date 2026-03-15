@@ -87,6 +87,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       (resolvedEnv.GEMINI_LIVE_MODEL ?? "gemini-live-2.5-flash-native-audio").trim() ||
       "gemini-live-2.5-flash-native-audio",
     enableLiveApi: parseBool(resolvedEnv.ENABLE_LIVE_API, false),
+    enableFirestore: parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
+    firestoreCollectionPrefix: (resolvedEnv.FIRESTORE_COLLECTION_PREFIX ?? "silvervisit").trim() || "silvervisit",
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
   };
 }

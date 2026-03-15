@@ -1,90 +1,139 @@
-﻿# SilverVisit AI
+# SilverVisit AI
 
-SilverVisit AI is a UI Navigator demo for older adults joining telehealth visits.
+SilverVisit AI is a real UI Navigator submission for the Gemini Live Agent Challenge.  
+It combines screenshot-grounded UI navigation, real live microphone ingestion, and Firestore-backed deterministic sandbox data.
 
-It includes:
-- `frontend/sandbox-portal`: deterministic telehealth web flow (login to joined call)
-- `frontend/extension`: Chrome MV3 side panel agent that captures screen context, sends multimodal planning requests, and executes grounded actions
-- `backend`: Node.js + TypeScript backend on Vertex AI (`@google/genai`) with Gemini action planning and Gemini Live WebSocket support
-
-## Architecture
-- The extension captures URL, title, visible text, actionable elements, and a real screenshot from the active tab.
-- The extension sends the planning payload to `POST /api/plan-action`.
-- Backend returns exactly one grounded next action.
-- Extension highlights or executes the action safely (`highlight`, `click`, `type`, `scroll`, `wait`).
-- Live demo path uses `WS /api/live` with text + current image frame in the same session.
-
-## Prerequisites
-- Node.js 20 (Vite 7 recommends Node 20.19+)
-- npm
-- Chrome (for loading the extension)
-- For real Gemini calls: Vertex env vars + ADC
-
-## Install
+## Judge Quickstart
+1. Install dependencies:
 ```bash
 npm install
 cd backend && npm install && cd ..
 ```
-
-## Run Locally
-Terminal 1 (backend):
+2. Configure backend env:
 ```bash
 cd backend
 cp .env.example .env
-# Set GOOGLE_CLOUD_PROJECT=silvervisit-ai, GOOGLE_CLOUD_LOCATION=us-central1, ENABLE_LIVE_API=true
+```
+3. Set required env in `backend/.env`:
+```bash
+GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+GEMINI_ACTION_MODEL=gemini-2.5-flash
+GEMINI_LIVE_MODEL=gemini-live-2.5-flash-native-audio
+ENABLE_LIVE_API=true
+ENABLE_FIRESTORE=true
+FIRESTORE_COLLECTION_PREFIX=silvervisit
+```
+4. Authenticate ADC (Vertex + Firestore production mode):
+```bash
 gcloud auth application-default login
-npm run dev
 ```
-
-Terminal 2 (sandbox):
+5. Optional local Firestore emulator mode:
 ```bash
-npm run dev:sandbox
+gcloud beta emulators firestore start --host-port=127.0.0.1:8086
 ```
-
-Terminal 3 (extension build):
+Then set:
 ```bash
-npm run build:extension
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8086
 ```
-
-Load extension in Chrome:
-1. Open `chrome://extensions`
-2. Enable Developer Mode
-3. Load unpacked: `frontend/extension/dist`
-4. Open the side panel via extension action
-5. Open sandbox at `http://localhost:4173`
-
-## Demo Flow
-1. In side panel, enter goal (for example: "Help me join my doctor appointment").
-2. Click `Run Next Step (Screenshot Required)` repeatedly.
-3. Confirm transcript logs include captured screenshot and executed action details.
-4. Verify at least one grounded `type` and one grounded `click` execution in the sandbox flow.
-5. Complete flow from login to waiting room or joined call.
-
-## Live Demo Flow
-1. In side panel, click `Start Live`.
-2. Wait for the live transcript to show `LIVE_READY`.
-3. Click `Send Text + Current Frame` to send a text turn and image frame in one live session.
-4. Confirm model/transcript responses appear.
-5. Optional: click `Send Audio Probe` to verify graceful structured unsupported-audio handling.
-
-## Build and Checks
-Root frontend builds:
-```bash
-npm run build
-```
-
-Backend checks:
+6. Start backend:
 ```bash
 cd backend
-npm run build
-npm run smoke
+npm run dev
+```
+7. Start sandbox:
+```bash
+npm run dev --workspace sandbox-portal
+```
+8. Build extension and load unpacked from `frontend/extension/dist`:
+```bash
+npm run build --workspace extension
+```
+9. Open sandbox (`http://localhost:4173/?seed=2` for deterministic seeded run), open side panel, use inline mic in composer, then click the single primary CTA.
+
+## Proof Checklist
+- One default assistant surface with one primary CTA and inline mic.
+- Developer details are hidden by default under a collapsible drawer.
+- One CTA click performs one coordinated screenshot-grounded action turn.
+- Live audio chunks come from real `getUserMedia` microphone capture (no probe payloads).
+- Sandbox identity data is fetched from backend Firestore fixture records by deterministic seed.
+- `/health` shows Vertex, Live, and Firestore diagnostics.
+- Planner and live routes use `@google/genai` on Vertex AI.
+
+## Architecture
+- Diagram source: [docs/architecture.mmd](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/docs/architecture.mmd)
+- Components:
+  - `frontend/extension`: MV3 side panel + background + content script
+  - `frontend/sandbox-portal`: deterministic telehealth UI with stable IDs
+  - `backend`: Node.js + TypeScript API + WS proxy + Firestore repository
+
+## Deterministic Sandbox Behavior
+- Stable IDs and linear flow remain fixed.
+- Visible fixture content varies deterministically by seed:
+  - patient identity
+  - DOB
+  - login secret
+  - doctor name
+  - appointment details
+  - waiting/joined status text
+- Restart increments seed deterministically.
+
+## Build and Verification
+Run:
+```bash
+npm run build --workspace extension
+npm run build --workspace sandbox-portal
+cd backend && npm run build
+cd backend && npm run smoke
 ```
 
-## Cloud Deployment
-Backend Cloud Run deployment details are in [backend/README.md](backend/README.md).
+## Google Stack Evidence
+- **Planner call site**
+  - [backend/src/actionPlanner.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/actionPlanner.ts)
+  - Uses `client.models.generateContent` from `@google/genai` with Vertex config.
+- **Live call site**
+  - [backend/src/liveSession.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/liveSession.ts)
+  - Uses `client.live.connect` and forwards realtime `user_audio_chunk` / `audioStreamEnd`.
+- **Vertex client setup**
+  - [backend/src/vertex.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/vertex.ts)
+  - Constructs `GoogleGenAI({ vertexai: true, project, location })`.
+- **Runtime diagnostics**
+  - `GET /health` from [backend/src/routes/health.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/routes/health.ts)
+  - Includes `useVertexAI`, `vertexConfigured`, `liveEnabled`, `liveApiConfigured`, model names, Firestore mode/config.
+- **Cloud Run deploy proof**
+  - [backend/cloudbuild.yaml](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/cloudbuild.yaml)
+  - [backend/scripts/deploy-cloud-run.sh](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/deploy-cloud-run.sh)
+  - [backend/Dockerfile](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/Dockerfile)
 
-## External Blockers
-Only true external blockers should remain:
-- Missing Vertex credentials/ADC
-- Docker daemon unavailable (for container build/run)
-- Chrome runtime permission grant constraints
+## Firestore Evidence
+- **Collections used**
+  - `sandboxFixtures`
+  - `sandboxRuns`
+  - `navigatorSessions`
+  - `liveEvents`
+  - `actionLogs`
+- **Repository**
+  - [backend/src/firestore.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/firestore.ts)
+- **Seed/bootstrap script**
+  - `cd backend && npm run seed:firestore`
+  - Script: [backend/scripts/seed-firestore.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/seed-firestore.ts)
+- **Route mapping**
+  - `GET /api/sandbox/fixture` reads fixture by seed.
+  - `POST /api/sandbox/run/start` creates run + resolves fixture.
+  - `POST /api/sandbox/run/event` updates run progression.
+  - `POST /api/session/start` upserts navigator session.
+  - `POST /api/plan-action` records action log.
+  - `WS /api/live` records live lifecycle events.
+
+## Troubleshooting
+- `live_not_configured`:
+  - check `ENABLE_LIVE_API=true` and Vertex env values.
+- Firestore route failures:
+  - set `ENABLE_FIRESTORE=true` and either `FIRESTORE_EMULATOR_HOST` or valid ADC + `GOOGLE_CLOUD_PROJECT`.
+  - if production mode returns `PERMISSION_DENIED` for Firestore API, enable:
+    - `firestore.googleapis.com` for your project.
+- Mic denied:
+  - allow extension microphone permission and retry.
+- Unsupported page warning:
+  - open the sandbox tab (`localhost` or SilverVisit sandbox host) before running.

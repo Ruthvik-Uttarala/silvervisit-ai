@@ -137,3 +137,20 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+service-account*.json
+firebase*service*.json
+google-credentials*.json
+backend/.env
+frontend/.env
+frontend/extension/.env
+sandbox-portal/.env

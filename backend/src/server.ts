@@ -2,12 +2,14 @@ import http, { IncomingMessage, Server, ServerResponse } from "node:http";
 import { URL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { loadConfig } from "./config";
+import { getFirestoreRepository } from "./firestore";
 import { handleLiveSocketConnection } from "./liveSession";
 import { logger } from "./logger";
-import { sessionStore } from "./sessions";
 import { handleHealth } from "./routes/health";
 import { buildPlanActionErrorResponse, handlePlanAction } from "./routes/planAction";
-import { handleSessionStart } from "./routes/session";
+import { handleSandboxFixture, handleSandboxRunEvent, handleSandboxRunStart } from "./routes/sandbox";
+import { handleSessionGet, handleSessionStart } from "./routes/session";
+import { sessionStore } from "./sessions";
 import {
   assertJsonContentType,
   generateRequestId,
@@ -18,6 +20,24 @@ import {
   setCorsHeaders,
 } from "./utils";
 
+function logGoogleRuntimeConfiguration(): void {
+  const config = loadConfig();
+  const firestore = getFirestoreRepository(config);
+  const firestoreDiagnostics = firestore.getDiagnostics();
+  logger.info("Google runtime configuration", {
+    provider: "@google/genai",
+    vertexModeEnabled: config.useVertexAI,
+    vertexConfigured: config.useVertexAI && config.googleCloudProject.length > 0 && config.googleCloudLocation.length > 0,
+    liveEnabled: config.enableLiveApi,
+    plannerModel: config.geminiActionModel,
+    liveModel: config.geminiLiveModel,
+    googleCloudProjectConfigured: config.googleCloudProject.length > 0,
+    googleCloudLocation: config.googleCloudLocation,
+    firestoreConfigured: firestoreDiagnostics.configured,
+    firestoreMode: firestoreDiagnostics.mode,
+  });
+}
+
 export interface RunningServer {
   server: Server;
   port: number;
@@ -26,6 +46,7 @@ export interface RunningServer {
 
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = loadConfig();
+  const firestore = getFirestoreRepository(config);
   const requestIdHeader = req.headers["x-request-id"];
   const requestId = typeof requestIdHeader === "string" && requestIdHeader.trim() ? requestIdHeader : generateRequestId();
 
@@ -55,14 +76,45 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
 
     if (method === "POST" && pathname === "/api/session/start") {
       const body = await readJsonBody(req, config.maxRequestBytes);
-      handleSessionStart(res, body, requestId, sessionStore, logger);
+      handleSessionStart(res, body, requestId, sessionStore, logger, firestore);
+      return;
+    }
+
+    if (method === "GET" && pathname.startsWith("/api/session/")) {
+      const sessionId = pathname.slice("/api/session/".length).trim();
+      if (!sessionId) {
+        sendJson(res, 400, { error: "sessionId is required." }, requestId);
+        return;
+      }
+      await handleSessionGet(res, requestId, sessionId, sessionStore, firestore);
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/sandbox/fixture") {
+      const seedQuery = parsedUrl.searchParams.get("seed");
+      const seed = seedQuery ? Number(seedQuery) : undefined;
+      await handleSandboxFixture(res, requestId, firestore, seed);
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/sandbox/run/start") {
+      assertJsonContentType(req);
+      const body = await readJsonBody(req, config.maxRequestBytes);
+      await handleSandboxRunStart(res, body, requestId, firestore, logger);
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/sandbox/run/event") {
+      assertJsonContentType(req);
+      const body = await readJsonBody(req, config.maxRequestBytes);
+      await handleSandboxRunEvent(res, body, requestId, firestore);
       return;
     }
 
     if (method === "POST" && pathname === "/api/plan-action") {
       assertJsonContentType(req);
       const body = await readJsonBody(req, config.maxRequestBytes);
-      await handlePlanAction(res, body, requestId, sessionStore, config, logger);
+      await handlePlanAction(res, body, requestId, sessionStore, config, logger, firestore);
       return;
     }
 
@@ -129,10 +181,12 @@ export function createAppServer(): { server: Server; wss: WebSocketServer } {
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage, requestId: string) => {
     const config = loadConfig();
+    const firestore = getFirestoreRepository(config);
     handleLiveSocketConnection(ws, req, {
       config,
       logger,
       sessions: sessionStore,
+      firestore,
       requestId,
     });
   });
@@ -141,7 +195,26 @@ export function createAppServer(): { server: Server; wss: WebSocketServer } {
 }
 
 export async function startServer(port = loadConfig().port): Promise<RunningServer> {
+  logGoogleRuntimeConfiguration();
   sessionStore.startCleanup();
+  const config = loadConfig();
+  const firestore = getFirestoreRepository(config);
+  const firestoreDiagnostics = firestore.getDiagnostics();
+  if (firestoreDiagnostics.configured) {
+    try {
+      const seededCount = await firestore.ensureDeterministicFixtures();
+      logger.info("Firestore fixture bootstrap complete", {
+        firestoreMode: firestoreDiagnostics.mode,
+        seededCount,
+      });
+    } catch (error) {
+      firestore.markUnavailable(error);
+      logger.error("Firestore bootstrap failed; runtime marked unavailable", {
+        firestoreMode: firestoreDiagnostics.mode,
+        error: safeErrorMessage(error),
+      });
+    }
+  }
 
   const { server, wss } = createAppServer();
 
