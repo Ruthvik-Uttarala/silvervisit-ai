@@ -8,6 +8,24 @@ import { isVertexConfigured, loadConfig } from "../src/config";
 import { parseNavigatorIntent } from "../src/intentParser";
 import { startServer } from "../src/server";
 import { PlanActionRequest, PlanActionResponse } from "../src/types";
+import { shouldEmitFeedEntry } from "../../frontend/extension/src/lib/feedDeduper";
+import {
+  buildGoalQueue,
+  getActiveGoal,
+  removeCompletedGoals,
+  serializePendingGoals,
+  updateGoalStatus,
+} from "../../frontend/extension/src/lib/goalQueue";
+import {
+  createTurnGenerationToken,
+  isTurnGenerationCurrent,
+  reconcileSupportState,
+  shouldApplyLiveGenerationEvent,
+  SupportState,
+} from "../../frontend/extension/src/lib/runtimeGuards";
+import { appendTranscriptSegment, flushPendingInterim } from "../../frontend/extension/src/lib/transcriptComposer";
+import { buildUnsupportedPageReason, isSupportedTelehealthUrl } from "../../frontend/extension/src/lib/telehealthSupport";
+import { FirestoreRepository, getFirestoreDiagnostics } from "../src/firestore";
 
 const ACTION_TYPES = new Set(["highlight", "click", "type", "scroll", "wait", "ask_user", "done"]);
 
@@ -276,6 +294,15 @@ function runIntentParserRegression(): void {
   assert.equal(joinIntent.patientName, "Jennifer Gold");
   assert.ok(Boolean(joinIntent.dob), "DOB should be extracted");
   assert.equal(joinIntent.explicitTime?.toLowerCase(), "3 pm");
+  assert.equal(joinIntent.loginSecret, undefined);
+
+  const loginGoal =
+    "Help me join my doctor appointment. My name is Harper Lewis and DOB is 08/28/1956 and password is Harper-Checkin-8820";
+  const loginIntent = parseNavigatorIntent(loginGoal);
+  assert.equal(loginIntent.destination, "appointments");
+  assert.equal(loginIntent.patientName, "Harper Lewis");
+  assert.equal(loginIntent.dob, "08/28/1956");
+  assert.equal(loginIntent.loginSecret, "Harper-Checkin-8820");
 
   const referralGoal =
     "Please take me to the referrals page to see what my general checkup doctor referred me to last week.";
@@ -303,6 +330,184 @@ function runIntentParserRegression(): void {
   const messageIntent = parseNavigatorIntent(messageGoal);
   assert.equal(messageIntent.destination, "messages");
   assert.ok(messageIntent.topic?.toLowerCase().includes("asthma") || messageIntent.specialty?.toLowerCase().includes("asthma"));
+
+  const checkinGoal = "Please help me check in and join my appointment.";
+  const checkinIntent = parseNavigatorIntent(checkinGoal);
+  assert.equal(checkinIntent.destination, "appointments");
+  assert.equal(checkinIntent.actionVerb, "join");
+
+  const marchFirst = parseNavigatorIntent("Open my March first report.");
+  assert.equal(marchFirst.destination, "reports_results");
+  assert.ok(
+    marchFirst.explicitDate?.toLowerCase().includes("march 1"),
+    "March first should normalize to March 1 explicit date",
+  );
+
+  const marchFifteenth = parseNavigatorIntent("Take me to my March fifteenth appointment.");
+  assert.equal(marchFifteenth.destination, "appointments");
+  assert.ok(
+    marchFifteenth.explicitDate?.toLowerCase().includes("march 15"),
+    "March fifteenth should normalize to March 15 explicit date",
+  );
+
+  const latestReferral = parseNavigatorIntent("Show me my latest referral.");
+  assert.equal(latestReferral.destination, "referrals");
+  assert.ok(latestReferral.temporalCues.includes("latest"));
+
+  const recentMessage = parseNavigatorIntent("Open my recent message thread.");
+  assert.equal(recentMessage.destination, "messages");
+  assert.ok(recentMessage.temporalCues.includes("recent"));
+
+  const todayAppointment = parseNavigatorIntent("Help me join today's appointment.");
+  assert.equal(todayAppointment.destination, "appointments");
+  assert.ok(todayAppointment.temporalCues.includes("today"));
+}
+
+function runTranscriptMergeRegression(): void {
+  const typedFirst = appendTranscriptSegment("Help me check in", "my name is Ruthvik");
+  assert.equal(typedFirst, "Help me check in my name is Ruthvik");
+
+  const speechThenTyped = appendTranscriptSegment("my date of birth is 08/28/1956", "and help me join");
+  assert.equal(speechThenTyped, "my date of birth is 08/28/1956 and help me join");
+  const postEdit = appendTranscriptSegment(`${speechThenTyped} please`, "please");
+  assert.equal(postEdit, `${speechThenTyped} please`);
+
+  const pauseRestart = appendTranscriptSegment("Fill my name Ruthvik", "Ruthvik and help me check in");
+  assert.equal(pauseRestart, "Fill my name Ruthvik and help me check in");
+
+  const interimFinalOverlap = appendTranscriptSegment("help me join my", "my doctor appointment");
+  assert.equal(interimFinalOverlap, "help me join my doctor appointment");
+  const flushed = flushPendingInterim("help me join my doctor appointment", "doctor appointment");
+  assert.equal(flushed, "help me join my doctor appointment");
+}
+
+function runFeedDeduperRegression(): void {
+  const start = { key: "", at: 0 };
+  const first = shouldEmitFeedEntry(start, "warning:live_not_ready", 1000, 5000);
+  assert.equal(first.emit, true);
+  const duplicate = shouldEmitFeedEntry(first.next, "warning:live_not_ready", 1500, 5000);
+  assert.equal(duplicate.emit, false);
+  const later = shouldEmitFeedEntry(duplicate.next, "warning:live_not_ready", 7001, 5000);
+  assert.equal(later.emit, true);
+}
+
+function runGoalQueueRegression(): void {
+  const goals = buildGoalQueue("Join today's appointment;\nOpen my latest referral");
+  assert.equal(goals.length, 2);
+  assert.equal(getActiveGoal(goals)?.text, "Join today's appointment");
+
+  const inProgress = updateGoalStatus(goals, goals[0].id, "in_progress");
+  assert.equal(getActiveGoal(inProgress)?.id, goals[0].id);
+
+  const completedFirst = updateGoalStatus(inProgress, goals[0].id, "completed", {
+    completionEvidence: "Joined evidence visible",
+  });
+  const remaining = removeCompletedGoals(completedFirst);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].text, "Open my latest referral");
+  assert.equal(serializePendingGoals(remaining), "Open my latest referral");
+}
+
+function runFirestoreDiagnosticsRegression(): void {
+  const configPresent = getFirestoreDiagnostics({
+    port: 8080,
+    useVertexAI: true,
+    googleCloudProject: "silvervisit-test-project",
+    googleCloudLocation: "us-central1",
+    geminiActionModel: "gemini-2.5-flash",
+    geminiLiveModel: "gemini-live-2.5-flash-native-audio",
+    enableLiveApi: true,
+    enableFirestore: true,
+    firestoreCollectionPrefix: "silvervisit",
+    maxRequestBytes: 1024 * 1024,
+    httpRequestTimeoutMs: 0,
+    httpHeadersTimeoutMs: 70000,
+    httpKeepAliveTimeoutMs: 65000,
+  });
+  assert.equal(configPresent.configured, true);
+  assert.equal(configPresent.mode, "production");
+
+  const repository = new FirestoreRepository({
+    port: 8080,
+    useVertexAI: true,
+    googleCloudProject: "silvervisit-test-project",
+    googleCloudLocation: "us-central1",
+    geminiActionModel: "gemini-2.5-flash",
+    geminiLiveModel: "gemini-live-2.5-flash-native-audio",
+    enableLiveApi: true,
+    enableFirestore: true,
+    firestoreCollectionPrefix: "silvervisit",
+    maxRequestBytes: 1024 * 1024,
+    httpRequestTimeoutMs: 0,
+    httpHeadersTimeoutMs: 70000,
+    httpKeepAliveTimeoutMs: 65000,
+  });
+  repository.markUnavailable(new Error("7 PERMISSION_DENIED: Missing or insufficient permissions."));
+  const diagnostics = repository.getDiagnostics();
+  assert.equal(diagnostics.configured, true);
+  assert.equal(diagnostics.runtimeReady, false);
+  assert.ok(String(diagnostics.lastError ?? "").includes("PERMISSION_DENIED"));
+}
+
+function runSupportedPageHelperRegression(): void {
+  assert.equal(isSupportedTelehealthUrl("http://127.0.0.1:4173/?seed=4"), true);
+  assert.equal(isSupportedTelehealthUrl("http://localhost:4173/?seed=4"), true);
+  assert.equal(isSupportedTelehealthUrl("https://discord.com/channels"), false);
+  const reason = buildUnsupportedPageReason("https://discord.com/channels");
+  assert.ok(reason.includes("https://discord.com/channels"));
+  assert.ok(reason.toLowerCase().includes("return to the silvervisit telehealth app"));
+}
+
+function runRuntimeGenerationRegression(): void {
+  const initialState: SupportState = {
+    status: "unknown",
+    activeUrl: undefined,
+    reason: undefined,
+    generation: 0,
+  };
+  const toUnsupported = reconcileSupportState(
+    initialState,
+    "unsupported",
+    "https://example.com",
+    "unsupported",
+  );
+  assert.equal(toUnsupported.changed, true);
+  assert.equal(toUnsupported.becameUnsupported, true);
+  const toSupported = reconcileSupportState(
+    toUnsupported.next,
+    "supported",
+    "http://127.0.0.1:4173/?seed=4",
+    undefined,
+  );
+  assert.equal(toSupported.changed, true);
+  assert.equal(toSupported.becameSupported, true);
+  assert.equal(toSupported.next.status, "supported");
+
+  const token = createTurnGenerationToken({
+    tabGeneration: toSupported.next.generation,
+    snapshotGeneration: 7,
+    tabUrl: "http://127.0.0.1:4173/?seed=4",
+  });
+  assert.equal(
+    isTurnGenerationCurrent(token, {
+      tabGeneration: toSupported.next.generation,
+      snapshotGeneration: 7,
+      tabUrl: "http://127.0.0.1:4173/?seed=4",
+    }),
+    true,
+  );
+  assert.equal(
+    isTurnGenerationCurrent(token, {
+      tabGeneration: toSupported.next.generation + 1,
+      snapshotGeneration: 7,
+      tabUrl: "http://127.0.0.1:4173/?seed=4",
+    }),
+    false,
+  );
+
+  assert.equal(shouldApplyLiveGenerationEvent(4, 4), true);
+  assert.equal(shouldApplyLiveGenerationEvent(3, 4), false);
+  assert.equal(shouldApplyLiveGenerationEvent(0, 0), false);
 }
 
 function runPlannerGuardrailRegression(): void {
@@ -557,13 +762,236 @@ function runPlannerGuardrailRegression(): void {
   );
   assert.equal(prematureDoneResult.status, "need_clarification");
   assert.equal(prematureDoneResult.action.type, "ask_user");
+
+  const loginRequest: PlanActionRequest = {
+    ...baseRequest,
+    userGoal:
+      "Help me join my appointment. My name is Harper Lewis and DOB is 08/28/1956 and password is Harper-Checkin-8820",
+    elements: [
+      {
+        id: "login-full-name-input",
+        text: "Full name",
+        role: "textbox",
+        x: 10,
+        y: 10,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "login-dob-input",
+        text: "Date of birth",
+        role: "textbox",
+        x: 10,
+        y: 60,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "login-password-input",
+        text: "Password",
+        role: "textbox",
+        x: 10,
+        y: 110,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+    ],
+  };
+  const loginIntent = parseNavigatorIntent(loginRequest.userGoal);
+  const loginFallbackResult = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "ask_user" }),
+    loginRequest,
+    loginIntent,
+  );
+  assert.equal(loginFallbackResult.status, "ok");
+  assert.equal(loginFallbackResult.action.type, "type");
+  assert.ok(
+    ["login-full-name-input", "login-dob-input", "login-password-input"].includes(
+      loginFallbackResult.action.targetId ?? "",
+    ),
+  );
+
+  const loginMissingPasswordIntent = parseNavigatorIntent(
+    "Help me join my appointment. My name is Harper Lewis and DOB is 08/28/1956",
+  );
+  const loginMissingPasswordResult = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "ask_user" }),
+    loginRequest,
+    loginMissingPasswordIntent,
+  );
+  assert.equal(loginMissingPasswordResult.status, "need_clarification");
+  assert.equal(loginMissingPasswordResult.action.type, "ask_user");
+  assert.ok(loginMissingPasswordResult.message.toLowerCase().includes("password"));
+
+  const loginFromVisibleCredentialsRequest: PlanActionRequest = {
+    ...loginRequest,
+    userGoal: "Take me to the referrals page.",
+    visibleText: [
+      "Sign in",
+      "Deterministic credentials: Harper Lewis  -  08/28/1956  -  Harper-Checkin-8820",
+      "Enter seeded credentials to continue.",
+    ],
+  };
+  const loginFromVisibleIntent = parseNavigatorIntent(loginFromVisibleCredentialsRequest.userGoal);
+  const loginFromVisibleResult = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "ask_user" }),
+    loginFromVisibleCredentialsRequest,
+    loginFromVisibleIntent,
+  );
+  assert.equal(loginFromVisibleResult.status, "ok");
+  assert.equal(loginFromVisibleResult.action.type, "type");
+
+  const sectionOnlyResponse = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "click", targetId: "nav-reports-results-btn" }),
+    {
+      ...baseRequest,
+      userGoal: "Open my March first report.",
+      elements: [
+        {
+          id: "nav-reports-results-btn",
+          text: "Reports & Results",
+          role: "button",
+          x: 10,
+          y: 10,
+          width: 160,
+          height: 32,
+          visible: true,
+          enabled: true,
+        },
+        {
+          id: "open-report-result-report-1-btn",
+          text: "Open Report Details",
+          role: "button",
+          x: 10,
+          y: 60,
+          width: 160,
+          height: 32,
+          visible: true,
+          enabled: true,
+        },
+      ],
+    },
+    parseNavigatorIntent("Open my March first report."),
+  );
+  assert.equal(sectionOnlyResponse.status, "ok");
+  assert.equal(sectionOnlyResponse.action.type, "click");
+  assert.equal(sectionOnlyResponse.action.targetId, "open-report-result-report-1-btn");
+  assert.ok(sectionOnlyResponse.message.toLowerCase().includes("couldn't find an exact match"));
+
+  const prescriptionFallbackResponse = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "ask_user" }),
+    {
+      ...baseRequest,
+      userGoal: "Open my March first prescription.",
+      elements: [
+        {
+          id: "open-prescription-rx-1-btn",
+          text: "Open Prescription Details",
+          role: "button",
+          x: 10,
+          y: 10,
+          width: 160,
+          height: 32,
+          visible: true,
+          enabled: true,
+        },
+      ],
+    },
+    parseNavigatorIntent("Open my March first prescription."),
+  );
+  assert.equal(prescriptionFallbackResponse.status, "ok");
+  assert.equal(prescriptionFallbackResponse.action.type, "click");
+  assert.equal(prescriptionFallbackResponse.action.targetId, "open-prescription-rx-1-btn");
+  assert.ok(prescriptionFallbackResponse.message.toLowerCase().includes("couldn't find an exact match"));
+
+  const nutritionReferralRequest: PlanActionRequest = {
+    ...baseRequest,
+    userGoal: "Show referrals from my March 15th nutrition appointment.",
+    elements: [
+      {
+        id: "open-referral-ref-nutrition-btn",
+        text: "Open Referral Details",
+        role: "button",
+        x: 10,
+        y: 10,
+        width: 160,
+        height: 32,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "open-referral-ref-physical-btn",
+        text: "Open Referral Details",
+        role: "button",
+        x: 10,
+        y: 60,
+        width: 160,
+        height: 32,
+        visible: true,
+        enabled: true,
+      },
+    ],
+    sandboxFixture: {
+      ...baseRequest.sandboxFixture!,
+      referrals: [
+        {
+          referralId: "ref-nutrition",
+          appointmentId: "apt-joinable",
+          createdDateTime: "2026-03-15T12:00:00-05:00",
+          providerName: "Dr. Naomi Patel",
+          specialty: "Primary Care",
+          topic: "Nutrition",
+          referredTo: "Nutrition Counseling",
+          referralReason: "Diet support",
+          status: "open",
+        },
+        {
+          referralId: "ref-physical",
+          appointmentId: "apt-joinable",
+          createdDateTime: "2026-03-15T12:00:00-05:00",
+          providerName: "Dr. Naomi Patel",
+          specialty: "Primary Care",
+          topic: "Physical",
+          referredTo: "Physical Therapy",
+          referralReason: "Mobility support",
+          status: "open",
+        },
+      ],
+    },
+  };
+  const nutritionReferralResponse = enforcePlannerGuardrailsForTesting(
+    buildCandidate({ type: "ask_user" }),
+    nutritionReferralRequest,
+    parseNavigatorIntent(nutritionReferralRequest.userGoal),
+  );
+  assert.equal(nutritionReferralResponse.status, "ok");
+  assert.equal(nutritionReferralResponse.action.type, "click");
+  assert.equal(nutritionReferralResponse.action.targetId, "open-referral-ref-nutrition-btn");
 }
 
 async function main(): Promise<void> {
+  runGoalQueueRegression();
+  console.log("[smoke] Goal queue persistence regressions passed");
+  runTranscriptMergeRegression();
+  console.log("[smoke] Transcript merge regression checks passed");
+  runFeedDeduperRegression();
+  console.log("[smoke] Feed dedupe regression checks passed");
+  runSupportedPageHelperRegression();
+  console.log("[smoke] Supported-page helper regression checks passed");
+  runRuntimeGenerationRegression();
+  console.log("[smoke] Runtime generation guard regressions passed");
   runIntentParserRegression();
   console.log("[smoke] Generic intent parser regression checks passed");
   runPlannerGuardrailRegression();
   console.log("[smoke] Planner guardrail regression checks passed");
+  runFirestoreDiagnosticsRegression();
+  console.log("[smoke] Firestore diagnostics semantics regressions passed");
 
   const running = await startServer(0);
   const baseUrl = `http://127.0.0.1:${running.port}`;
@@ -653,6 +1081,65 @@ async function main(): Promise<void> {
     const sessionGet = await sessionGetRes.json();
     assert.equal(sessionGet.sessionId, session.sessionId);
     console.log("[smoke] GET /api/session/:id passed");
+
+    const loginPlannerPayload = {
+      sessionId: session.sessionId,
+      userGoal:
+        "Help me join my doctor appointment. My name is Harper Lewis and DOB is 08/28/1956 and password is Harper-Checkin-8820",
+      pageUrl: "http://127.0.0.1:4173/?seed=3",
+      pageTitle: "SilverVisit Login",
+      visibleText: [
+        "Sign in",
+        "Deterministic credentials: Harper Lewis  -  08/28/1956  -  Harper-Checkin-8820",
+        "Enter seeded credentials to continue.",
+      ],
+      elements: [
+        {
+          id: "login-full-name-input",
+          text: "Full name",
+          role: "textbox",
+          x: 10,
+          y: 10,
+          width: 200,
+          height: 36,
+          visible: true,
+          enabled: true,
+        },
+        {
+          id: "login-dob-input",
+          text: "Date of birth",
+          role: "textbox",
+          x: 10,
+          y: 60,
+          width: 200,
+          height: 36,
+          visible: true,
+          enabled: true,
+        },
+        {
+          id: "login-password-input",
+          text: "Password",
+          role: "textbox",
+          x: 10,
+          y: 110,
+          width: 200,
+          height: 36,
+          visible: true,
+          enabled: true,
+        },
+      ],
+    };
+    const loginPlannerRes = await fetch(`${baseUrl}/api/plan-action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginPlannerPayload),
+    });
+    assert.equal(loginPlannerRes.status, 200);
+    const loginPlannerResponse = await loginPlannerRes.json();
+    validatePlanActionShape(loginPlannerResponse);
+    assert.equal(loginPlannerResponse.status, "ok");
+    assert.ok(["type", "click"].includes(loginPlannerResponse.action.type));
+    console.log("[smoke] Login/check-in clear-instruction regression check passed");
 
     const fixturePath = path.resolve(__dirname, "..", "fixtures", "sample-plan-request.json");
     const screenshotPath = path.resolve(__dirname, "..", "fixtures", "sample-screenshot.png");
@@ -987,3 +1474,4 @@ main().catch((error) => {
   console.error(`[smoke] FAILED: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
   process.exit(1);
 });
+

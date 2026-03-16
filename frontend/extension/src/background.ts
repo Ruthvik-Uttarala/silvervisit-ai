@@ -9,9 +9,9 @@ import type {
   PageSnapshot,
   ScreenshotCapture,
 } from "./lib/types";
+import { isSupportedTelehealthUrl } from "./lib/telehealthSupport";
 
 const CAPTURE_COOLDOWN_MS = 900;
-const SUPPORTED_LOCAL_PORT = "4173";
 let captureInFlight: Promise<string> | null = null;
 let lastCapturedAt = 0;
 let lastCaptureDataUrl: string | null = null;
@@ -48,37 +48,53 @@ function isMessageResponse(response: ContentScriptResponse): response is { ok: t
   return response.ok && "message" in response;
 }
 
-async function getActiveTab(): Promise<ActiveTabInfo> {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.id) {
-    throw new Error("Open the Sandbox Dashboard in an active browser tab first.");
-  }
-
+function toActiveTabInfo(tab: chrome.tabs.Tab): ActiveTabInfo {
   return {
-    tabId: tab.id,
+    tabId: tab.id as number,
     windowId: tab.windowId,
     url: tab.url,
     title: tab.title,
   };
 }
 
-function isSupportedTelehealthUrl(url?: string): boolean {
-  if (!url) {
-    return false;
-  }
+async function resolveFromWindowQuery(query: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab | null> {
+  const tabs = await chrome.tabs.query(query);
+  const tab = tabs.find((candidate) => typeof candidate.id === "number");
+  return tab ?? null;
+}
+
+async function resolveFromWindowsSnapshot(): Promise<chrome.tabs.Tab | null> {
+  let windows: chrome.windows.Window[] = [];
   try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return false;
-    }
-    const host = parsed.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1") {
-      return parsed.port === SUPPORTED_LOCAL_PORT;
-    }
-    return host.includes("silvervisit");
+    windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   } catch {
-    return false;
+    return null;
   }
+  const focusedWindow = windows.find((windowInfo) => windowInfo.focused) ?? windows[0];
+  if (!focusedWindow?.tabs || focusedWindow.tabs.length === 0) {
+    return null;
+  }
+  const activeTab = focusedWindow.tabs.find((tab) => tab.active && typeof tab.id === "number");
+  if (activeTab) {
+    return activeTab;
+  }
+  return focusedWindow.tabs.find((tab) => typeof tab.id === "number") ?? null;
+}
+
+async function getActiveTab(): Promise<ActiveTabInfo> {
+  const lastFocused = await resolveFromWindowQuery({ active: true, lastFocusedWindow: true });
+  if (lastFocused) {
+    return toActiveTabInfo(lastFocused);
+  }
+  const currentWindow = await resolveFromWindowQuery({ active: true, currentWindow: true });
+  if (currentWindow) {
+    return toActiveTabInfo(currentWindow);
+  }
+  const fallback = await resolveFromWindowsSnapshot();
+  if (fallback) {
+    return toActiveTabInfo(fallback);
+  }
+  throw new Error("Open the Sandbox Dashboard in an active browser tab first.");
 }
 
 function normalizeUrlForMatch(url?: string): string {

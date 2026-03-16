@@ -1,4 +1,4 @@
-﻿
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type AppointmentStatus =
@@ -312,6 +312,16 @@ export default function App() {
     [runId],
   );
 
+  const revealElementById = useCallback((elementId: string) => {
+    requestAnimationFrame(() => {
+      const target = document.getElementById(elementId);
+      if (!target) {
+        return;
+      }
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, []);
+
   const navigate = useCallback(
     (next: PortalSection, eventType = "navigate", metadata?: Record<string, unknown>) => {
       setSection(next);
@@ -403,36 +413,13 @@ export default function App() {
     () => appointmentsSorted.find((appointment) => appointment.appointmentId === selectedAppointmentId) ?? null,
     [appointmentsSorted, selectedAppointmentId],
   );
-  const selectedPastVisit = useMemo(
-    () => fixture?.pastVisitSummaries.find((summary) => summary.visitId === selectedPastVisitId) ?? fixture?.pastVisitSummaries[0] ?? null,
-    [fixture, selectedPastVisitId],
-  );
   const joinableAppointment = useMemo(
     () => appointmentsSorted.find((appointment) => appointment.joinableNow && !isPastLike(appointment.status)) ?? null,
     [appointmentsSorted],
   );
-  const selectedReport = useMemo(
-    () => fixture?.reportsResults.find((item) => item.resultId === selectedReportId) ?? fixture?.reportsResults[0] ?? null,
-    [fixture, selectedReportId],
-  );
-  const selectedNote = useMemo(
-    () => fixture?.notesAvs.find((item) => item.noteId === selectedNoteId) ?? fixture?.notesAvs[0] ?? null,
-    [fixture, selectedNoteId],
-  );
   const selectedThread = useMemo(
     () => fixture?.messageThreads.find((item) => item.threadId === selectedThreadId) ?? fixture?.messageThreads[0] ?? null,
     [fixture, selectedThreadId],
-  );
-  const selectedPrescription = useMemo(
-    () =>
-      fixture?.prescriptions.find((item) => item.prescriptionId === selectedPrescriptionId) ??
-      fixture?.prescriptions[0] ??
-      null,
-    [fixture, selectedPrescriptionId],
-  );
-  const selectedReferral = useMemo(
-    () => fixture?.referrals.find((item) => item.referralId === selectedReferralId) ?? fixture?.referrals[0] ?? null,
-    [fixture, selectedReferralId],
   );
 
   const loginMatched = Boolean(
@@ -659,7 +646,11 @@ export default function App() {
                       <section
                         key={result.resultId}
                         id={`report-result-item-${result.resultId}`}
-                        className={`rounded-2xl border border-slate-300 bg-slate-50 p-4 ${index >= 1 ? "min-h-[260px]" : "min-h-[180px]"}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          selectedReportId === result.resultId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        } ${index >= 1 ? "min-h-[260px]" : "min-h-[180px]"}`}
                       >
                         <p className="font-semibold">{formatDateTime(result.createdDateTime)}</p>
                         <p className="text-xl font-black">{result.summaryTitle}</p>
@@ -672,30 +663,31 @@ export default function App() {
                           onClick={() => {
                             setSelectedReportId(result.resultId);
                             void appendRunEvent("reports_results", "report_opened", { resultId: result.resultId });
+                            revealElementById("report-result-detail-card");
                           }}
                         >
                           Open Report Details
                         </button>
+                        {selectedReportId === result.resultId ? (
+                          <section id="report-result-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
+                            <h3 className="text-2xl font-black">{result.summaryTitle}</h3>
+                            <p className="mt-2">{result.summarySnippet}</p>
+                            <button
+                              id="report-return-appointment-btn"
+                              type="button"
+                              className="mt-3 rounded-xl border border-slate-300 px-4 py-2"
+                              onClick={() => {
+                                setSelectedAppointmentId(result.appointmentId);
+                                navigate("appointment_details", "report_to_appointment", { appointmentId: result.appointmentId });
+                              }}
+                            >
+                              Return to Related Appointment
+                            </button>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {selectedReport ? (
-                    <section id="report-result-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
-                      <h3 className="text-2xl font-black">{selectedReport.summaryTitle}</h3>
-                      <p className="mt-2">{selectedReport.summarySnippet}</p>
-                      <button
-                        id="report-return-appointment-btn"
-                        type="button"
-                        className="mt-3 rounded-xl border border-slate-300 px-4 py-2"
-                        onClick={() => {
-                          setSelectedAppointmentId(selectedReport.appointmentId);
-                          navigate("appointment_details", "report_to_appointment", { appointmentId: selectedReport.appointmentId });
-                        }}
-                      >
-                        Return to Related Appointment
-                      </button>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -707,7 +699,11 @@ export default function App() {
                       <section
                         key={note.noteId}
                         id={`note-avs-item-${note.noteId}`}
-                        className={`rounded-2xl border border-slate-300 bg-slate-50 p-4 ${index >= 1 ? "min-h-[240px]" : "min-h-[170px]"}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          selectedNoteId === note.noteId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        } ${index >= 1 ? "min-h-[240px]" : "min-h-[170px]"}`}
                       >
                         <p className="font-semibold">{formatDateTime(note.completedDateTime)}</p>
                         <p className="text-xl font-black">{note.summaryTitle}</p>
@@ -719,20 +715,21 @@ export default function App() {
                           onClick={() => {
                             setSelectedNoteId(note.noteId);
                             void appendRunEvent("notes_avs", "note_opened", { noteId: note.noteId });
+                            revealElementById("note-avs-detail-card");
                           }}
                         >
                           Open Note
                         </button>
+                        {selectedNoteId === note.noteId ? (
+                          <section id="note-avs-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
+                            <h3 className="text-2xl font-black">{note.summaryTitle}</h3>
+                            <p className="mt-2">{note.summarySnippet}</p>
+                            <p className="mt-2 text-sm text-slate-600">Topic: {note.topic}</p>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {selectedNote ? (
-                    <section id="note-avs-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
-                      <h3 className="text-2xl font-black">{selectedNote.summaryTitle}</h3>
-                      <p className="mt-2">{selectedNote.summarySnippet}</p>
-                      <p className="mt-2 text-sm text-slate-600">Topic: {selectedNote.topic}</p>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -797,7 +794,11 @@ export default function App() {
                       <section
                         key={item.prescriptionId}
                         id={`prescription-item-${item.prescriptionId}`}
-                        className={`rounded-2xl border border-slate-300 bg-slate-50 p-4 ${index >= 1 ? "min-h-[220px]" : "min-h-[160px]"}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          selectedPrescriptionId === item.prescriptionId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        } ${index >= 1 ? "min-h-[220px]" : "min-h-[160px]"}`}
                       >
                         <p className="font-semibold">{formatDateTime(item.createdDateTime)}</p>
                         <p className="text-xl font-black">{item.medicationName} · {item.dosage}</p>
@@ -807,20 +808,23 @@ export default function App() {
                           id={`open-prescription-${item.prescriptionId}-btn`}
                           type="button"
                           className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-white"
-                          onClick={() => setSelectedPrescriptionId(item.prescriptionId)}
+                          onClick={() => {
+                            setSelectedPrescriptionId(item.prescriptionId);
+                            revealElementById("prescription-detail-card");
+                          }}
                         >
                           Open Prescription Details
                         </button>
+                        {selectedPrescriptionId === item.prescriptionId ? (
+                          <section id="prescription-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
+                            <h3 className="text-2xl font-black">{item.medicationName}</h3>
+                            <p className="mt-2">Dosage: {item.dosage}</p>
+                            <p className="mt-1 text-sm text-slate-600">Linked appointment: {item.appointmentId}</p>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {selectedPrescription ? (
-                    <section id="prescription-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
-                      <h3 className="text-2xl font-black">{selectedPrescription.medicationName}</h3>
-                      <p className="mt-2">Dosage: {selectedPrescription.dosage}</p>
-                      <p className="mt-1 text-sm text-slate-600">Linked appointment: {selectedPrescription.appointmentId}</p>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -829,7 +833,15 @@ export default function App() {
                   <h2 className="text-3xl font-black">Referrals</h2>
                   <div className="mt-4 space-y-3">
                     {fixture.referrals.map((item) => (
-                      <section key={item.referralId} id={`referral-item-${item.referralId}`} className="rounded-2xl border border-slate-300 bg-slate-50 p-4">
+                      <section
+                        key={item.referralId}
+                        id={`referral-item-${item.referralId}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          selectedReferralId === item.referralId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        }`}
+                      >
                         <p className="font-semibold">{formatDateTime(item.createdDateTime)}</p>
                         <p className="text-xl font-black">{item.referredTo}</p>
                         <p>{item.providerName} · {item.specialty} · Topic: {item.topic}</p>
@@ -838,20 +850,23 @@ export default function App() {
                           id={`open-referral-${item.referralId}-btn`}
                           type="button"
                           className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-white"
-                          onClick={() => setSelectedReferralId(item.referralId)}
+                          onClick={() => {
+                            setSelectedReferralId(item.referralId);
+                            revealElementById("referral-detail-card");
+                          }}
                         >
                           Open Referral Details
                         </button>
+                        {selectedReferralId === item.referralId ? (
+                          <section id="referral-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
+                            <h3 className="text-2xl font-black">{item.referredTo}</h3>
+                            <p className="mt-2">{item.referralReason}</p>
+                            <p className="mt-1 text-sm text-slate-600">Status: {item.status}</p>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {selectedReferral ? (
-                    <section id="referral-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
-                      <h3 className="text-2xl font-black">{selectedReferral.referredTo}</h3>
-                      <p className="mt-2">{selectedReferral.referralReason}</p>
-                      <p className="mt-1 text-sm text-slate-600">Status: {selectedReferral.status}</p>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -1025,23 +1040,46 @@ export default function App() {
                   <h2 className="text-3xl font-black">Need Help Joining?</h2>
                   <div className="mt-4 grid gap-3">
                     {fixture.supportPaths.map((path) => (
-                      <section key={path.pathId} id={`support-path-${path.pathId}`} className="rounded-2xl border border-slate-300 bg-slate-50 p-4">
+                      <section
+                        key={path.pathId}
+                        id={`support-path-${path.pathId}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          activeSupportPathId === path.pathId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        }`}
+                      >
                         <h3 className="text-xl font-black">{path.label}</h3>
                         <p className="text-base">{path.description}</p>
-                        <button id={`open-support-${path.pathId}-btn`} type="button" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-white" onClick={() => setActiveSupportPathId(path.pathId)}>Open Path</button>
+                        <button
+                          id={`open-support-${path.pathId}-btn`}
+                          type="button"
+                          className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-white"
+                          onClick={() => {
+                            setActiveSupportPathId(path.pathId);
+                            revealElementById(`support-path-${path.pathId}`);
+                            revealElementById(`support-path-detail-${path.pathId}`);
+                          }}
+                        >
+                          Open Path
+                        </button>
+                        {activeSupportPathId === path.pathId ? (
+                          <section
+                            id={`support-path-detail-${path.pathId}`}
+                            className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4"
+                          >
+                            <p className="font-semibold text-blue-900">Active path: {path.label}</p>
+                            <p className="mt-1 text-sm text-blue-900">{path.actionHint}</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button id="support-go-device-setup-btn" type="button" className="rounded-xl border border-slate-300 px-4 py-2" onClick={() => { setActiveSupportPathId(null); setLifecycle("device_setup"); navigate("device_setup", "support_to_device"); }}>Troubleshoot Device</button>
+                              <button id="support-call-clinic-now-btn" type="button" className="rounded-xl border border-slate-300 px-4 py-2" onClick={() => setEventNote("Clinic support call simulated.")}>Call Clinic</button>
+                              <button id="support-return-to-appointment-btn" type="button" className="rounded-xl bg-slate-900 px-4 py-2 text-white" onClick={() => { setActiveSupportPathId(null); navigate("appointment_details", "support_return_to_appointment"); }}>Return to Appointment</button>
+                            </div>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {activeSupportPathId ? (
-                    <section id="support-path-detail-card" className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
-                      <p className="font-semibold text-blue-900">Active path: {activeSupportPathId}</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <button id="support-go-device-setup-btn" type="button" className="rounded-xl border border-slate-300 px-4 py-2" onClick={() => { setActiveSupportPathId(null); setLifecycle("device_setup"); navigate("device_setup", "support_to_device"); }}>Troubleshoot Device</button>
-                        <button id="support-call-clinic-now-btn" type="button" className="rounded-xl border border-slate-300 px-4 py-2" onClick={() => setEventNote("Clinic support call simulated.")}>Call Clinic</button>
-                        <button id="support-return-to-appointment-btn" type="button" className="rounded-xl bg-slate-900 px-4 py-2 text-white" onClick={() => { setActiveSupportPathId(null); navigate("appointment_details", "support_return_to_appointment"); }}>Return to Appointment</button>
-                      </div>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -1050,19 +1088,37 @@ export default function App() {
                   <h2 className="text-3xl font-black">After Visit Summary</h2>
                   <div className="mt-4 grid gap-3">
                     {fixture.pastVisitSummaries.map((summary) => (
-                      <section key={summary.visitId} id={`past-visit-summary-${summary.visitId}`} className="rounded-2xl border border-slate-300 bg-slate-50 p-4">
+                      <section
+                        key={summary.visitId}
+                        id={`past-visit-summary-${summary.visitId}`}
+                        className={`rounded-2xl border bg-slate-50 p-4 ${
+                          selectedPastVisitId === summary.visitId
+                            ? "border-sky-500 ring-2 ring-sky-200"
+                            : "border-slate-300"
+                        }`}
+                      >
                         <p className="font-semibold">{formatDateTime(summary.completedDateTime)}</p>
                         <p className="text-xl font-black">{summary.summaryTitle}</p>
-                        <button id={`open-past-visit-${summary.visitId}-btn`} type="button" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-white" onClick={() => setSelectedPastVisitId(summary.visitId)}>Open Summary Details</button>
+                        <button
+                          id={`open-past-visit-${summary.visitId}-btn`}
+                          type="button"
+                          className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-white"
+                          onClick={() => {
+                            setSelectedPastVisitId(summary.visitId);
+                            revealElementById("past-visit-detail-card");
+                          }}
+                        >
+                          Open Summary Details
+                        </button>
+                        {selectedPastVisitId === summary.visitId ? (
+                          <section id="past-visit-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
+                            <h3 className="text-2xl font-black">{summary.summaryTitle}</h3>
+                            <p className="mt-2">{summary.summarySnippet}</p>
+                          </section>
+                        ) : null}
                       </section>
                     ))}
                   </div>
-                  {selectedPastVisit ? (
-                    <section id="past-visit-detail-card" className="mt-4 rounded-2xl border border-slate-300 bg-white p-4">
-                      <h3 className="text-2xl font-black">{selectedPastVisit.summaryTitle}</h3>
-                      <p className="mt-2">{selectedPastVisit.summarySnippet}</p>
-                    </section>
-                  ) : null}
                 </article>
               )}
 
@@ -1086,4 +1142,5 @@ export default function App() {
     </main>
   );
 }
+
 

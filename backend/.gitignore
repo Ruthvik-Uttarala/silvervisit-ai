@@ -23,3 +23,15 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.p12
+firebase-service-account*.json
+gcloud-key*.json
+service-account*.json
+secrets*.json

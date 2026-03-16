@@ -114,9 +114,13 @@ Expected output:
 ## Firestore API Prerequisite
 - In production mode, Firestore calls require the Cloud Firestore API to be enabled for `GOOGLE_CLOUD_PROJECT`.
 - If disabled, `/health` will show:
-  - `firestoreConfigured=false`
+  - `firestoreConfigured=true`
   - `firestoreRuntimeReady=false`
   - `firestoreLastError` with the permission detail.
+
+## Local Port Note
+- If backend startup fails with `EADDRINUSE: 8080 already in use`, another backend process is already running.
+- Stop the existing process and run `npm run dev` again.
 
 ## Google Proof Paths
 - Planner: [backend/src/actionPlanner.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/actionPlanner.ts)

@@ -239,5 +239,8 @@ Verifier output is judge-ready and includes:
   - run `cd backend && npm run secret:hygiene`
 - Mic denied:
   - allow extension microphone permission and retry.
+- `EADDRINUSE: 8080 already in use`:
+  - only one backend server can bind to port `8080`.
+  - stop the previous backend process, then restart `cd backend && npm run dev`.
 - Unsupported page warning:
   - open the sandbox tab (`localhost` or SilverVisit sandbox host) before running.

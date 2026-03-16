@@ -345,6 +345,7 @@ export interface ParsedNavigatorIntent {
   actionVerb: NavigatorActionVerb;
   patientName?: string;
   dob?: string;
+  loginSecret?: string;
   providerName?: string;
   specialty?: string;
   topic?: string;

@@ -34,7 +34,17 @@ const DESTINATION_HINTS: Array<{
   },
   {
     destination: "appointments",
-    terms: [/\bappointment\b/i, /\bappointments\b/i, /\bvisit\b/i, /\bjoin\b/i, /\bwaiting room\b/i, /\becheck[- ]?in\b/i],
+    terms: [
+      /\bappointment\b/i,
+      /\bappointments\b/i,
+      /\bvisit\b/i,
+      /\bjoin\b/i,
+      /\bwaiting room\b/i,
+      /\becheck[- ]?in\b/i,
+      /\bcheck[- ]?in\b/i,
+      /\bsign[- ]?in\b/i,
+      /\blog[- ]?in\b/i,
+    ],
   },
   {
     destination: "help",
@@ -47,6 +57,10 @@ const TEMPORAL_TERMS: Array<{ key: string; pattern: RegExp }> = [
   { key: "tomorrow", pattern: /\btomorrow\b/i },
   { key: "yesterday", pattern: /\byesterday\b/i },
   { key: "last_week", pattern: /\blast week\b/i },
+  { key: "current", pattern: /\bcurrent\b/i },
+  { key: "latest", pattern: /\blatest\b/i },
+  { key: "recent", pattern: /\brecent\b/i },
+  { key: "just_had", pattern: /\bjust had\b/i },
   { key: "this_afternoon", pattern: /\bthis afternoon\b/i },
   { key: "this_morning", pattern: /\bthis morning\b/i },
   { key: "tonight", pattern: /\btonight\b/i },
@@ -54,6 +68,53 @@ const TEMPORAL_TERMS: Array<{ key: string; pattern: RegExp }> = [
   { key: "most_recent", pattern: /\bmost recent\b/i },
   { key: "last_visit", pattern: /\blast visit\b/i },
 ];
+
+const MONTH_NAMES =
+  "january|february|march|april|may|june|july|august|september|october|november|december";
+
+const ORDINAL_WORD_TO_DAY: Record<string, string> = {
+  first: "1",
+  second: "2",
+  third: "3",
+  fourth: "4",
+  fifth: "5",
+  sixth: "6",
+  seventh: "7",
+  eighth: "8",
+  ninth: "9",
+  tenth: "10",
+  eleventh: "11",
+  twelfth: "12",
+  thirteenth: "13",
+  fourteenth: "14",
+  fifteenth: "15",
+  sixteenth: "16",
+  seventeenth: "17",
+  eighteenth: "18",
+  nineteenth: "19",
+  twentieth: "20",
+  "twenty first": "21",
+  "twenty-first": "21",
+  "twenty second": "22",
+  "twenty-second": "22",
+  "twenty third": "23",
+  "twenty-third": "23",
+  "twenty fourth": "24",
+  "twenty-fourth": "24",
+  "twenty fifth": "25",
+  "twenty-fifth": "25",
+  "twenty sixth": "26",
+  "twenty-sixth": "26",
+  "twenty seventh": "27",
+  "twenty-seventh": "27",
+  "twenty eighth": "28",
+  "twenty-eighth": "28",
+  "twenty ninth": "29",
+  "twenty-ninth": "29",
+  thirtieth: "30",
+  "thirty first": "31",
+  "thirty-first": "31",
+};
 
 const STOP_WORDS = new Set([
   "help",
@@ -71,6 +132,25 @@ const STOP_WORDS = new Set([
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeSpokenMonthOrdinals(goal: string): string {
+  const ordinalAlternation = Object.keys(ORDINAL_WORD_TO_DAY)
+    .sort((a, b) => b.length - a.length)
+    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  if (!ordinalAlternation) {
+    return goal;
+  }
+  const pattern = new RegExp(`\\b(${MONTH_NAMES})\\s+(${ordinalAlternation})\\b`, "gi");
+  return goal.replace(pattern, (fullMatch, monthRaw: string, ordinalRaw: string) => {
+    const normalizedOrdinal = ordinalRaw.toLowerCase();
+    const day = ORDINAL_WORD_TO_DAY[normalizedOrdinal];
+    if (!day) {
+      return fullMatch;
+    }
+    return `${monthRaw} ${day}`;
+  });
 }
 
 function toTitleCase(value: string): string {
@@ -119,7 +199,13 @@ function pickActionVerb(goal: string): NavigatorActionVerb {
   if (/\bsend (?:a )?message\b/i.test(goal) || /\bwrite (?:a )?message\b/i.test(goal)) {
     return "send_message";
   }
-  if (/\bjoin\b/i.test(goal) || /\battend\b/i.test(goal) || /\benter (?:the )?call\b/i.test(goal)) {
+  if (
+    /\bjoin\b/i.test(goal) ||
+    /\battend\b/i.test(goal) ||
+    /\benter (?:the )?call\b/i.test(goal) ||
+    /\bcheck[- ]?in\b/i.test(goal) ||
+    /\bsign[- ]?in\b/i.test(goal)
+  ) {
     return "join";
   }
   if (/\bopen\b/i.test(goal) || /\btake me to\b/i.test(goal) || /\bgo to\b/i.test(goal)) {
@@ -170,6 +256,22 @@ function extractDob(goal: string): string | undefined {
   return monthWord?.[0] ? normalizeWhitespace(monthWord[0]) : undefined;
 }
 
+function extractLoginSecret(goal: string): string | undefined {
+  const patterns = [
+    /\b(?:password|passcode|login secret|secret)\b\s*(?:is|=|:)?\s*([a-z0-9][a-z0-9@#$!._-]{2,80})/i,
+    /\b(?:password|passcode)\s+([a-z0-9][a-z0-9@#$!._-]{2,80})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = goal.match(pattern);
+    const candidate = match?.[1] ? normalizeWhitespace(match[1]) : "";
+    if (!candidate) {
+      continue;
+    }
+    return candidate;
+  }
+  return undefined;
+}
+
 function extractProvider(goal: string): string | undefined {
   const withDoctor = goal.match(/\b(?:from|with|my)\s+([a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,3})\s+doctor\b/i);
   if (withDoctor?.[1]) {
@@ -215,6 +317,13 @@ function extractTopic(goal: string): string | undefined {
       return candidate;
     }
   }
+  const appPattern = goal.match(/\b([a-z][a-z -]{2,32})\s+app(?:ointment)?\b/i);
+  if (appPattern?.[1]) {
+    const candidate = normalizeWhitespace(appPattern[1]);
+    if (!STOP_WORDS.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
   return undefined;
 }
 
@@ -225,6 +334,7 @@ function extractTemporalCues(goal: string): { temporalCues: string[]; explicitDa
   const explicitDateMatch =
     goal.match(/\b\d{4}-\d{2}-\d{2}\b/) ??
     goal.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/) ??
+    goal.match(new RegExp(`\\b(${MONTH_NAMES})\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,\\s*\\d{4})?\\b`, "i")) ??
     goal.match(
       /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?\b/i,
     );
@@ -238,7 +348,7 @@ function extractTemporalCues(goal: string): { temporalCues: string[]; explicitDa
 
 export function parseNavigatorIntent(userGoal: string): ParsedNavigatorIntent {
   const rawGoal = typeof userGoal === "string" ? userGoal : "";
-  const goal = normalizeWhitespace(rawGoal);
+  const goal = normalizeWhitespace(normalizeSpokenMonthOrdinals(rawGoal));
   if (!goal) {
     return {
       destination: "unknown",
@@ -254,6 +364,7 @@ export function parseNavigatorIntent(userGoal: string): ParsedNavigatorIntent {
     actionVerb: pickActionVerb(goal),
     patientName: extractPatientName(goal),
     dob: extractDob(goal),
+    loginSecret: extractLoginSecret(goal),
     providerName: extractProvider(goal),
     specialty: extractSpecialty(goal),
     topic: extractTopic(goal),

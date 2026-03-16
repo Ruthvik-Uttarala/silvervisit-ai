@@ -294,7 +294,27 @@ function hasAmbiguousInteractableTarget(target: UIElement, request: PlanActionRe
   return false;
 }
 
-function inferIdentityField(target: UIElement): "patient_name" | "patient_dob" | null {
+type CredentialField = "patient_name" | "patient_dob" | "login_secret";
+type CredentialSet = { patientName?: string; patientDob?: string; loginSecret?: string };
+
+interface RankedDestinationCandidate {
+  targetId: string;
+  score: number;
+  reason: string;
+  recordSummary: string;
+  exactMatch: boolean;
+}
+
+interface DestinationResolution {
+  action?: ActionObject;
+  reasoning: string;
+  tie: boolean;
+  fallbackUsed: boolean;
+  selectedSummary?: string;
+  fallbackMessage?: string;
+}
+
+function inferIdentityField(target: UIElement): CredentialField | null {
   const source = [
     target.id,
     target.text,
@@ -310,7 +330,500 @@ function inferIdentityField(target: UIElement): "patient_name" | "patient_dob" |
   if (/(date of birth|dob|birth date|birthday)/.test(source)) {
     return "patient_dob";
   }
+  if (/(password|passcode|login secret|secret code|security code)/.test(source)) {
+    return "login_secret";
+  }
   return null;
+}
+
+function isSandboxLoginPage(request: PlanActionRequest): boolean {
+  const idSet = new Set(request.elements.map((element) => element.id));
+  if (!idSet.has("login-full-name-input") || !idSet.has("login-dob-input") || !idSet.has("login-password-input")) {
+    return false;
+  }
+  const hasVisibleCredentialHint = request.visibleText.some((line) => /deterministic credentials/i.test(line));
+  if (!hasVisibleCredentialHint) {
+    return false;
+  }
+  const pageUrl = request.pageUrl ?? "";
+  return /^https?:\/\/(127\.0\.0\.1|localhost):4173/i.test(pageUrl);
+}
+
+function extractVisibleSandboxCredentials(request: PlanActionRequest): CredentialSet | null {
+  if (!isSandboxLoginPage(request)) {
+    return null;
+  }
+  for (const line of request.visibleText) {
+    const lower = line.toLowerCase();
+    const prefix = "deterministic credentials:";
+    const startIndex = lower.indexOf(prefix);
+    if (startIndex < 0) {
+      continue;
+    }
+    const rawPayload = line.slice(startIndex + prefix.length).trim();
+    const canonicalPayload = rawPayload.replace(/\s-\s/g, "|");
+    const chunks = canonicalPayload
+      .split(/\s*[·|]\s*/g)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    if (chunks.length < 3) {
+      continue;
+    }
+    const [patientName, patientDob, ...secretParts] = chunks;
+    const loginSecret = secretParts.join(" ").trim();
+    if (!patientName || !patientDob || !loginSecret) {
+      continue;
+    }
+    return { patientName, patientDob, loginSecret };
+  }
+  return null;
+}
+function startOfDayMs(value: number): number {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function parseDateMs(value: string): number | null {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parsePortalNowMs(request: PlanActionRequest): number {
+  if (request.sandboxFixture) {
+    const fixtureNow = parseDateMs(request.sandboxFixture.portalNow);
+    if (fixtureNow !== null) {
+      return fixtureNow;
+    }
+  }
+  return Date.now();
+}
+
+function parseIntentDateMs(explicitDate: string | undefined, portalNowMs: number): number | null {
+  if (!explicitDate) {
+    return null;
+  }
+  const direct = parseDateMs(explicitDate);
+  if (direct !== null) {
+    return startOfDayMs(direct);
+  }
+  const year = new Date(portalNowMs).getFullYear();
+  const withPortalYear = parseDateMs(`${explicitDate} ${year}`);
+  return withPortalYear === null ? null : startOfDayMs(withPortalYear);
+}
+
+function parseIntentTimeMinutes(explicitTime: string | undefined): number | null {
+  if (!explicitTime) {
+    return null;
+  }
+  const match = explicitTime.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!match) {
+    return null;
+  }
+  const hourRaw = Number(match[1]);
+  const minute = Number(match[2] ?? "0");
+  if (!Number.isFinite(hourRaw) || !Number.isFinite(minute)) {
+    return null;
+  }
+  let hour = hourRaw % 24;
+  const meridiem = (match[3] ?? "").toLowerCase();
+  if (meridiem === "pm" && hour < 12) {
+    hour += 12;
+  }
+  if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
+  return hour * 60 + minute;
+}
+
+function scoreTemporalFit(
+  itemDateIso: string,
+  parsedIntent: ParsedNavigatorIntent,
+  portalNowMs: number,
+): number {
+  const itemMs = parseDateMs(itemDateIso);
+  if (itemMs === null) {
+    return 0;
+  }
+  let score = 0;
+  const portalDay = startOfDayMs(portalNowMs);
+  const itemDay = startOfDayMs(itemMs);
+  const dayDelta = Math.round((itemDay - portalDay) / 86400000);
+
+  const explicitDay = parseIntentDateMs(parsedIntent.explicitDate, portalNowMs);
+  if (explicitDay !== null) {
+    const diffDays = Math.abs(Math.round((itemDay - explicitDay) / 86400000));
+    if (diffDays === 0) {
+      score += 46;
+    } else {
+      score -= Math.min(24, diffDays * 6);
+    }
+  }
+
+  const explicitMinutes = parseIntentTimeMinutes(parsedIntent.explicitTime);
+  if (explicitMinutes !== null) {
+    const itemDate = new Date(itemMs);
+    const itemMinutes = itemDate.getHours() * 60 + itemDate.getMinutes();
+    const diff = Math.abs(itemMinutes - explicitMinutes);
+    if (diff <= 20) score += 24;
+    else if (diff <= 60) score += 12;
+    else if (diff <= 150) score += 4;
+    else score -= Math.min(18, Math.round(diff / 30));
+  }
+
+  const cues = new Set(parsedIntent.temporalCues);
+  if (cues.has("today")) score += dayDelta === 0 ? 34 : -10;
+  if (cues.has("tomorrow")) score += dayDelta === 1 ? 28 : -8;
+  if (cues.has("yesterday")) score += dayDelta === -1 ? 28 : -8;
+  if (cues.has("last_week")) score += dayDelta < 0 && dayDelta >= -7 ? 20 : -6;
+  if (cues.has("this_afternoon")) {
+    const hour = new Date(itemMs).getHours();
+    score += hour >= 12 && hour < 18 ? 12 : -4;
+  }
+  if (cues.has("this_morning")) {
+    const hour = new Date(itemMs).getHours();
+    score += hour >= 6 && hour < 12 ? 12 : -4;
+  }
+  if (cues.has("latest") || cues.has("recent") || cues.has("current") || cues.has("newest") || cues.has("most_recent") || cues.has("just_had") || cues.has("last_visit")) {
+    if (itemMs <= portalNowMs) {
+      score += 12;
+      score += Math.max(0, 10 - Math.floor((portalNowMs - itemMs) / 86400000));
+    }
+  }
+
+  return score;
+}
+
+function scoreMatchTerm(term: string | undefined, candidate: string | undefined, weight: number): number {
+  const normalizedTerm = normalizeTargetText(term ?? "");
+  const normalizedCandidate = normalizeTargetText(candidate ?? "");
+  if (!normalizedTerm || !normalizedCandidate) {
+    return 0;
+  }
+  if (normalizedCandidate.includes(normalizedTerm) || normalizedTerm.includes(normalizedCandidate)) {
+    return weight;
+  }
+  return 0;
+}
+
+function summarizeRequestedConstraints(parsedIntent: ParsedNavigatorIntent): string {
+  const parts: string[] = [];
+  if (parsedIntent.explicitDate) parts.push(parsedIntent.explicitDate);
+  if (parsedIntent.explicitTime) parts.push(parsedIntent.explicitTime);
+  if (parsedIntent.topic) parts.push(parsedIntent.topic);
+  if (parsedIntent.providerName) parts.push(parsedIntent.providerName);
+  if (parsedIntent.specialty) parts.push(parsedIntent.specialty);
+  if (parts.length === 0) {
+    if (parsedIntent.temporalCues.includes("latest") || parsedIntent.temporalCues.includes("recent")) {
+      return "the latest item";
+    }
+    return "your requested item";
+  }
+  return parts.join(" / ");
+}
+
+function buildRecordSummary(record: any, isoDate: string): string {
+  const dateLabel = isoDate ? new Date(isoDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+  const provider = record.providerName ?? "";
+  const topic = record.topic ?? record.visitType ?? record.referredTo ?? record.subject ?? "";
+  return [dateLabel, provider, topic].filter(Boolean).join(" - ");
+}
+
+function hasTermMatch(term: string | undefined, ...candidates: Array<string | undefined>): boolean {
+  const normalizedTerm = normalizeTargetText(term ?? "");
+  if (!normalizedTerm) {
+    return true;
+  }
+  return candidates.some((candidate) => {
+    const normalizedCandidate = normalizeTargetText(candidate ?? "");
+    return normalizedCandidate.includes(normalizedTerm) || normalizedTerm.includes(normalizedCandidate);
+  });
+}
+
+function selectRankedCandidate(candidates: RankedDestinationCandidate[]): { best?: RankedDestinationCandidate; tie: boolean } {
+  if (candidates.length === 0) {
+    return { tie: false };
+  }
+  const ranked = [...candidates].sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  const second = ranked[1];
+  const tie = Boolean(second && Math.abs(best.score - second.score) <= 2);
+  return { best, tie };
+}
+
+function resolveDestinationCandidateAction(
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): DestinationResolution {
+  const fixture = request.sandboxFixture;
+  if (!fixture || !PRECISE_DESTINATIONS.has(parsedIntent.destination)) {
+    return { reasoning: "No deterministic destination candidate resolver for this turn.", tie: false, fallbackUsed: false };
+  }
+  const portalNowMs = parsePortalNowMs(request);
+  const interactableElements = request.elements.filter((element) => isInteractableElement(element));
+  const candidates: RankedDestinationCandidate[] = [];
+  const requestedDateDay = parseIntentDateMs(parsedIntent.explicitDate, portalNowMs);
+  const requestedTime = parseIntentTimeMinutes(parsedIntent.explicitTime);
+
+  for (const element of interactableElements) {
+    let record: any = null;
+    let isoDate: string | null = null;
+
+    if (parsedIntent.destination === "reports_results") {
+      const match = element.id.match(/^open-report-result-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.reportsResults.find((item) => item.resultId === match[1]) ?? null;
+      isoDate = record?.createdDateTime ?? null;
+    } else if (parsedIntent.destination === "notes_avs") {
+      const match = element.id.match(/^open-note-avs-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.notesAvs.find((item) => item.noteId === match[1]) ?? null;
+      isoDate = record?.completedDateTime ?? null;
+    } else if (parsedIntent.destination === "messages") {
+      const match = element.id.match(/^open-message-thread-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.messageThreads.find((item) => item.threadId === match[1]) ?? null;
+      isoDate = record?.updatedDateTime ?? null;
+    } else if (parsedIntent.destination === "prescriptions") {
+      const match = element.id.match(/^open-prescription-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.prescriptions.find((item) => item.prescriptionId === match[1]) ?? null;
+      isoDate = record?.createdDateTime ?? null;
+    } else if (parsedIntent.destination === "referrals") {
+      const match = element.id.match(/^open-referral-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.referrals.find((item) => item.referralId === match[1]) ?? null;
+      isoDate = record?.createdDateTime ?? null;
+    } else if (parsedIntent.destination === "appointments") {
+      const match = element.id.match(/^open-(?:past-)?appointment(?:-details)?-(.+)-btn$/);
+      if (!match) continue;
+      record = fixture.appointments.find((item) => item.appointmentId === match[1]) ?? null;
+      isoDate = record?.scheduledDateTime ?? null;
+    }
+
+    if (!record || !isoDate) {
+      continue;
+    }
+
+    const recordMs = parseDateMs(isoDate);
+    if (recordMs === null) {
+      continue;
+    }
+    const recordDay = startOfDayMs(recordMs);
+    const recordMinutes = new Date(recordMs).getHours() * 60 + new Date(recordMs).getMinutes();
+    const dateMatch = requestedDateDay === null ? true : requestedDateDay === recordDay;
+    const timeMatch = requestedTime === null ? true : Math.abs(recordMinutes - requestedTime) <= 40;
+    const topicMatch = hasTermMatch(
+      parsedIntent.topic,
+      record.topic,
+      record.referredTo,
+      record.referralReason,
+      record.summaryTitle,
+      record.subject,
+      record.medicationName,
+      record.visitType,
+    );
+    const providerMatch = hasTermMatch(parsedIntent.providerName, record.providerName);
+    const specialtyMatch = hasTermMatch(parsedIntent.specialty, record.specialty);
+    const exactMatch = dateMatch && timeMatch && topicMatch && providerMatch && specialtyMatch;
+
+    let score = 50;
+    score += scoreTemporalFit(isoDate, parsedIntent, portalNowMs);
+    score += scoreMatchTerm(parsedIntent.providerName, record.providerName, 24);
+    score += scoreMatchTerm(parsedIntent.specialty, record.specialty, 18);
+    // Topic intent must outrank date-only similarity in same-day ambiguity.
+    score += scoreMatchTerm(parsedIntent.topic, record.topic ?? record.visitType, 78);
+    score += scoreMatchTerm(parsedIntent.topic, record.referredTo ?? record.subject ?? record.summaryTitle, 66);
+    if (parsedIntent.topic && !topicMatch) {
+      score -= 34;
+    }
+    if (parsedIntent.destination === "appointments") {
+      if (record.joinableNow === true) score += 35;
+      if (record.status === "waiting_room" || record.status === "ready_to_join") score += 22;
+      if (record.status === "today") score += 10;
+      if (record.status === "past" || record.status === "completed" || record.status === "canceled") score -= 22;
+    }
+
+    const reasoningParts: string[] = [];
+    if (topicMatch && parsedIntent.topic) reasoningParts.push(`topic "${parsedIntent.topic}"`);
+    if (providerMatch && parsedIntent.providerName) reasoningParts.push(`provider "${parsedIntent.providerName}"`);
+    if (specialtyMatch && parsedIntent.specialty) reasoningParts.push(`specialty "${parsedIntent.specialty}"`);
+    if (dateMatch && parsedIntent.explicitDate) reasoningParts.push(`date "${parsedIntent.explicitDate}"`);
+    if (timeMatch && parsedIntent.explicitTime) reasoningParts.push(`time "${parsedIntent.explicitTime}"`);
+    if (reasoningParts.length === 0 && parsedIntent.temporalCues.length > 0) {
+      reasoningParts.push(`temporal cue "${parsedIntent.temporalCues[0]}"`);
+    }
+    const reasonSummary = reasoningParts.length > 0 ? reasoningParts.join(", ") : "overall evidence fit";
+
+    candidates.push({
+      targetId: element.id,
+      score,
+      reason: reasonSummary,
+      recordSummary: buildRecordSummary(record, isoDate),
+      exactMatch,
+    });
+  }
+
+  const ranked = selectRankedCandidate(candidates);
+  if (!ranked.best) {
+    return {
+      reasoning: "No visible item-level destination candidate is available on this screen.",
+      tie: false,
+      fallbackUsed: false,
+    };
+  }
+  if (ranked.tie) {
+    return {
+      reasoning: "Multiple similarly-ranked destination items are visible.",
+      tie: true,
+      fallbackUsed: false,
+    };
+  }
+  const hasAnyExactMatch = candidates.some((candidate) => candidate.exactMatch);
+  const fallbackUsed = !ranked.best.exactMatch && !hasAnyExactMatch;
+  const requestedSummary = summarizeRequestedConstraints(parsedIntent);
+  const fallbackMessage = fallbackUsed
+    ? `I couldn't find an exact match for ${requestedSummary}. I opened the closest grounded match: ${ranked.best.recordSummary} because it best matches ${ranked.best.reason}.`
+    : undefined;
+  return {
+    action: {
+      type: "click",
+      targetId: ranked.best.targetId,
+    },
+    reasoning: `Selected unique best destination candidate ${ranked.best.targetId} based on ${ranked.best.reason}.`,
+    tie: false,
+    fallbackUsed,
+    selectedSummary: ranked.best.recordSummary,
+    fallbackMessage,
+  };
+}
+
+function hasDestinationCompletionEvidence(request: PlanActionRequest, parsedIntent: ParsedNavigatorIntent): boolean {
+  const visible = request.visibleText.join(" ").toLowerCase();
+  const ids = new Set(request.elements.map((element) => element.id));
+  if (parsedIntent.destination === "appointments") {
+    return hasJoinedEvidence(request);
+  }
+  if (parsedIntent.destination === "reports_results") {
+    return ids.has("report-return-appointment-btn") || visible.includes("return to related appointment");
+  }
+  if (parsedIntent.destination === "messages") {
+    return ids.has("send-secure-message-btn") || ids.has("return-to-messages-btn") || visible.includes("message thread");
+  }
+  if (parsedIntent.destination === "notes_avs") {
+    return ids.has("note-detail-card");
+  }
+  if (parsedIntent.destination === "prescriptions") {
+    return ids.has("prescription-detail-card");
+  }
+  if (parsedIntent.destination === "referrals") {
+    return ids.has("referral-detail-card");
+  }
+  return false;
+}
+
+function getIntentCredentialValue(
+  parsedIntent: ParsedNavigatorIntent,
+  field: CredentialField,
+  fallbackCredentials?: CredentialSet | null,
+): string | null {
+  if (field === "patient_name") {
+    return parsedIntent.patientName?.trim() || fallbackCredentials?.patientName?.trim() || null;
+  }
+  if (field === "patient_dob") {
+    return parsedIntent.dob?.trim() || fallbackCredentials?.patientDob?.trim() || null;
+  }
+  return parsedIntent.loginSecret?.trim() || fallbackCredentials?.loginSecret?.trim() || null;
+}
+
+function detectCredentialActionFromPage(
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): { typeAction?: ActionObject; clarification?: string; reasoning: string } {
+  const visibleCredentials = extractVisibleSandboxCredentials(request);
+  const candidates = new Map<CredentialField, UIElement[]>();
+  for (const element of request.elements) {
+    if (!isInteractableElement(element)) {
+      continue;
+    }
+    const field = inferIdentityField(element);
+    if (!field) {
+      continue;
+    }
+    const existing = candidates.get(field) ?? [];
+    existing.push(element);
+    candidates.set(field, existing);
+  }
+
+  if (candidates.size === 0) {
+    return { reasoning: "No visible enabled login/check-in fields were detected." };
+  }
+
+  const orderedFields: CredentialField[] = ["patient_name", "patient_dob", "login_secret"];
+  const missingFields: string[] = [];
+  for (const field of orderedFields) {
+    if (!candidates.has(field)) {
+      continue;
+    }
+    const value = getIntentCredentialValue(parsedIntent, field, visibleCredentials);
+    if (!value) {
+      if (field === "patient_name") missingFields.push("full name");
+      if (field === "patient_dob") missingFields.push("date of birth");
+      if (field === "login_secret") missingFields.push("password");
+    }
+  }
+  if (missingFields.length > 0) {
+    return {
+      clarification: `Please provide your ${missingFields.join(" and ")} so I can continue the sign-in step.`,
+      reasoning: "Required visible login/check-in fields are missing user-provided values.",
+    };
+  }
+
+  for (const field of orderedFields) {
+    const fieldCandidates = candidates.get(field);
+    if (!fieldCandidates || fieldCandidates.length === 0) {
+      continue;
+    }
+    if (fieldCandidates.length > 1) {
+      return {
+        clarification: "I found more than one matching login field, so I need clarification before typing.",
+        reasoning: `Ambiguous login/check-in field matches detected for ${field}.`,
+      };
+    }
+    const target = fieldCandidates[0];
+    const value = getIntentCredentialValue(parsedIntent, field, visibleCredentials);
+    if (!value) {
+      continue;
+    }
+    if (normalizeComparable(target.value ?? "") === normalizeComparable(value)) {
+      continue;
+    }
+    return {
+      typeAction: {
+        type: "type",
+        targetId: target.id,
+        value,
+      },
+      reasoning: `Visible enabled ${field} field matched with user-provided credential value.`,
+    };
+  }
+
+  const continueButton = request.elements.find(
+    (element) => element.id === "login-continue-btn" && isInteractableElement(element),
+  );
+  if (continueButton) {
+    return {
+      typeAction: {
+        type: "click",
+        targetId: continueButton.id,
+      },
+      reasoning: "Login credentials are complete and continue is available.",
+    };
+  }
+
+  return {
+    reasoning: "Visible login/check-in fields already match provided values or no typing action is needed.",
+  };
 }
 
 function hasJoinedEvidence(request: PlanActionRequest): boolean {
@@ -413,6 +926,39 @@ function enforceGuardrailsInternal(
     }
   }
 
+  if (PRECISE_DESTINATIONS.has(parsedIntent.destination)) {
+    const rankedDestination = resolveDestinationCandidateAction(request, parsedIntent);
+    if (rankedDestination.tie) {
+      return buildAskUser(
+        "I found more than one possible match, so I need clarification.",
+        rankedDestination.reasoning,
+      );
+    }
+    if (rankedDestination.action?.targetId) {
+      const shouldReplaceWithExactItem =
+        response.action.type === "ask_user" ||
+        response.action.type === "done" ||
+        (response.action.type === "click" &&
+          (!!response.action.targetId?.startsWith("nav-") ||
+            response.action.targetId !== rankedDestination.action.targetId));
+      if (shouldReplaceWithExactItem) {
+        return {
+          status: "ok",
+          message:
+            rankedDestination.fallbackMessage ??
+            "I found the best matching item and will open it now.",
+          action: rankedDestination.action,
+          confidence: Math.max(response.confidence, 0.68),
+          grounding: {
+            matchedElementIds: [rankedDestination.action.targetId!],
+            matchedVisibleText: response.grounding.matchedVisibleText,
+            reasoningSummary: rankedDestination.reasoning.slice(0, 240),
+          },
+        };
+      }
+    }
+  }
+
   if (response.action.type === "type" && !response.action.value) {
     return buildAskUser(
       "I need the text to enter before continuing.",
@@ -429,6 +975,9 @@ function enforceGuardrailsInternal(
       }
       if (identityField === "patient_dob" && parsedIntent.dob) {
         response.action.value = parsedIntent.dob;
+      }
+      if (identityField === "login_secret" && parsedIntent.loginSecret) {
+        response.action.value = parsedIntent.loginSecret;
       }
     }
   }
@@ -457,13 +1006,13 @@ function enforceGuardrailsInternal(
 
   if (
     response.action.type === "done" &&
-    request.sandboxFixture &&
-    request.sandboxFixture.portalState !== "joined" &&
-    !hasJoinedEvidence(request)
+    !hasDestinationCompletionEvidence(request, parsedIntent)
   ) {
     return buildAskUser(
-      "You are not fully joined yet. I will keep guiding the next safe step.",
-      "The screen is still in a pre-join lifecycle state without explicit joined evidence.",
+      parsedIntent.destination === "appointments"
+        ? "You are not fully joined yet. I will keep guiding the next safe step."
+        : "I reached the section, but not the exact requested item yet. I will keep guiding.",
+      "Done was blocked because explicit end-goal evidence is not visible on this screen.",
     );
   }
 
@@ -472,6 +1021,31 @@ function enforceGuardrailsInternal(
       "The provided name or date of birth does not match this portal account. Please confirm which patient profile to use.",
       "User-provided identity conflicts with the active sandbox fixture, so auto-typing is blocked for safety.",
     );
+  }
+
+  if (response.status === "need_clarification" || response.action.type === "ask_user") {
+    const credentialResolution = detectCredentialActionFromPage(request, parsedIntent);
+    if (credentialResolution.typeAction) {
+      return {
+        status: "ok",
+        message:
+          credentialResolution.typeAction.type === "click"
+            ? "I found the login prerequisite and will continue safely."
+            : "I found the login/check-in field and will enter the value you provided.",
+        action: credentialResolution.typeAction,
+        confidence: Math.max(response.confidence, 0.65),
+        grounding: {
+          matchedElementIds: credentialResolution.typeAction.targetId
+            ? [credentialResolution.typeAction.targetId]
+            : [],
+          matchedVisibleText: response.grounding.matchedVisibleText,
+          reasoningSummary: credentialResolution.reasoning.slice(0, 240),
+        },
+      };
+    }
+    if (credentialResolution.clarification) {
+      return buildAskUser(credentialResolution.clarification, credentialResolution.reasoning);
+    }
   }
 
   return response;
@@ -545,6 +1119,100 @@ function buildUserPayload(
   return JSON.stringify(payload);
 }
 
+function buildDeterministicResponse(
+  message: string,
+  action: ActionObject,
+  reasoningSummary: string,
+  confidence = 0.72,
+): PlanActionResponse {
+  return {
+    status: "ok",
+    message,
+    action,
+    confidence: clampConfidence(confidence),
+    grounding: {
+      matchedElementIds: action.targetId ? [action.targetId] : [],
+      matchedVisibleText: [],
+      reasoningSummary: reasoningSummary.slice(0, 240),
+    },
+  };
+}
+
+function resolveObviousNextAction(
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): PlanActionResponse | null {
+  const credentialResolution = detectCredentialActionFromPage(request, parsedIntent);
+  if (credentialResolution.typeAction) {
+    return buildDeterministicResponse(
+      credentialResolution.typeAction.type === "click"
+        ? "I found the login prerequisite and will continue."
+        : "I found the login/check-in field and will enter the value.",
+      credentialResolution.typeAction,
+      credentialResolution.reasoning,
+      0.76,
+    );
+  }
+  if (credentialResolution.clarification && isSandboxLoginPage(request)) {
+    return buildAskUser(credentialResolution.clarification, credentialResolution.reasoning);
+  }
+
+  if (PRECISE_DESTINATIONS.has(parsedIntent.destination)) {
+    const rankedDestination = resolveDestinationCandidateAction(request, parsedIntent);
+    if (rankedDestination.tie) {
+      return buildAskUser(
+        "I found more than one possible match, so I need clarification.",
+        rankedDestination.reasoning,
+      );
+    }
+    if (rankedDestination.action?.targetId) {
+      return buildDeterministicResponse(
+        rankedDestination.fallbackMessage ??
+          "I found the best matching item and will open it now.",
+        rankedDestination.action,
+        rankedDestination.reasoning,
+        0.74,
+      );
+    }
+  }
+
+  const intentIsJoinFlow = parsedIntent.destination === "appointments" || parsedIntent.actionVerb === "join";
+  if (!intentIsJoinFlow) {
+    return null;
+  }
+
+  const elementMap = new Map(request.elements.map((element) => [element.id, element]));
+  const prioritizedIds = [
+    "recover-correct-appointment-btn",
+    "enter-call-btn",
+    "waiting-check-provider-ready-btn",
+    "details-enter-waiting-room-btn",
+    "details-start-echeckin-btn",
+    "echeckin-finish-btn",
+    "details-open-device-setup-btn",
+    "finish-device-test-btn",
+    "dashboard-open-upcoming-btn",
+    "nav-upcoming-btn",
+  ];
+  for (const id of prioritizedIds) {
+    const target = elementMap.get(id);
+    if (!isInteractableElement(target)) {
+      continue;
+    }
+    return buildDeterministicResponse(
+      "I found an obvious next safe step and will continue.",
+      {
+        type: "click",
+        targetId: id,
+      },
+      `Obvious next-step resolver selected ${id} for join-flow continuation.`,
+      0.7,
+    );
+  }
+
+  return null;
+}
+
 export async function planNextAction(request: PlanActionRequest, context: PlannerContext): Promise<PlanActionResponse> {
   const parsedIntent = parseNavigatorIntent(request.userGoal);
 
@@ -561,6 +1229,11 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
       "I found a mismatch between your provided patient details and the current portal account. Please confirm the correct identity before I continue.",
       "Identity conflict detected between user-provided name/date of birth and active fixture context.",
     );
+  }
+
+  const deterministicNext = resolveObviousNextAction(request, parsedIntent);
+  if (deterministicNext) {
+    return deterministicNext;
   }
 
   let client: any;
@@ -656,3 +1329,6 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
     );
   }
 }
+
+
+

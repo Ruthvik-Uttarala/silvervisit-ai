@@ -1031,7 +1031,7 @@ export class FirestoreRepository {
 
   getDiagnostics(): FirestoreDiagnostics {
     return {
-      configured: this.diagnosticsBase.configured && this.runtimeReady,
+      configured: this.diagnosticsBase.configured,
       mode: this.diagnosticsBase.mode,
       runtimeReady: this.runtimeReady,
       lastError: this.lastError ?? undefined,
