@@ -1,246 +1,232 @@
 # SilverVisit AI
+SilverVisit AI is a Chrome Extension UI Navigator that helps older adults complete confusing telehealth portal tasks safely. It listens to typed or spoken goals, grounds each step in the visible screen, executes one action at a time, and keeps navigation constrained to supported telehealth pages with clear safety guardrails.
 
-SilverVisit AI is a real UI Navigator submission for the Gemini Live Agent Challenge.  
-It combines screenshot-grounded UI navigation, real live microphone ingestion, and Firestore-backed deterministic sandbox data.
+## Why This Project Is Special
+- Multimodal UI navigation: user goal + screenshot/page context drive grounded next actions.
+- Real-time live interaction: Gemini Live path supports voice-driven help during navigation.
+- Safety-first execution: one grounded action per turn, with hidden/disabled/invalid target protections.
+- Telehealth-only guardrails: unsupported pages are blocked with explicit guidance.
+- Real Google Cloud evidence: Cloud Run backend, Vertex Gemini runtime, and Firestore-backed fixture/session traces.
 
-## Judge Quickstart
-1. Install dependencies:
-```bash
-npm install
-cd backend && npm install && cd ..
-```
-2. Configure backend env:
-```bash
-cd backend
-cp .env.example .env
-```
-3. Set required env in `backend/.env`:
-```bash
-GOOGLE_GENAI_USE_VERTEXAI=true
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-central1
-GEMINI_ACTION_MODEL=gemini-2.5-flash
-GEMINI_LIVE_MODEL=gemini-live-2.5-flash-native-audio
-ENABLE_LIVE_API=true
-ENABLE_FIRESTORE=true
-FIRESTORE_COLLECTION_PREFIX=silvervisit
-```
-4. Authenticate ADC (Vertex + Firestore production mode):
-```bash
-gcloud auth application-default login
-```
-5. Optional local Firestore emulator mode:
-```bash
-gcloud beta emulators firestore start --host-port=127.0.0.1:8086
-```
-Then set:
-```bash
-FIRESTORE_EMULATOR_HOST=127.0.0.1:8086
-```
-6. Start backend:
-```bash
-cd backend
-npm run dev
-```
-7. Start sandbox:
-```bash
-npm run dev --workspace sandbox-portal
-```
-8. Build extension and load unpacked from `frontend/extension/dist`:
-```bash
-npm run build --workspace extension
-```
-9. Open sandbox (`http://localhost:4173/?seed=2` for deterministic seeded run), open side panel, use inline mic in composer, then click the single primary CTA.
+## Judge Quick Start
+- Fastest understanding path: read `## Exact Demo Runbook (Fastest Path)` below and execute top-to-bottom.
+- Backend code: `backend/`
+- Extension code: `frontend/extension/`
+- Sandbox telehealth portal: `frontend/sandbox-portal/`
+- Google Cloud proof files: `backend/cloudbuild.yaml`, `backend/scripts/deploy-cloud-run.ps1`, `backend/scripts/verify-cloud-run.ts`, `backend/deploy/cloud-run.contract.json`
+- Architecture source: `docs/architecture.mmd`
 
-## Proof Checklist
-- One default assistant surface with one primary CTA and inline mic.
-- Developer details are hidden by default under a collapsible drawer.
-- One CTA click performs one coordinated screenshot-grounded action turn.
-- Live audio chunks come from real `getUserMedia` microphone capture (no probe payloads).
-- Sandbox identity data is fetched from backend Firestore fixture records by deterministic seed.
-- `/health` shows Vertex, Live, and Firestore diagnostics.
-- Planner and live routes use `@google/genai` on Vertex AI.
 
-## Architecture
-- Diagram source: [docs/architecture.mmd](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/docs/architecture.mmd)
-- Components:
-  - `frontend/extension`: MV3 side panel + background + content script
-  - `frontend/sandbox-portal`: deterministic telehealth UI with stable IDs
-  - `backend`: Node.js + TypeScript API + WS proxy + Firestore repository
+## Credentials Note
 
-## Deterministic Sandbox Behavior
-- Stable IDs and linear flow remain fixed.
-- Visible fixture content varies deterministically by seed:
-  - patient identity
-  - DOB
-  - login secret
-  - doctor name
-  - appointment details
-  - waiting/joined status text
-- Restart increments seed deterministically.
+This repository does not include private API keys or service account secrets.
 
-## Pre-Phase 5 Realism Notes
-- Sandbox is now a multi-section telehealth portal with:
-  - `Dashboard`
-  - `Upcoming Appointments`
-  - `Past Appointments`
-  - `Appointment Details`
-  - `eCheck-In`
-  - `Device Setup`
-  - `Virtual Waiting Room`
-  - `Reports / Results`
-  - `Notes / AVS`
-  - `Messages`
-  - `Prescriptions`
-  - `Referrals`
-  - `Help / Support`
-  - `After Visit Summary`
-- Backend intent extraction is lightweight and generic (no phrase whitelist):
-  - destination (`appointments`, `reports_results`, `notes_avs`, `messages`, `prescriptions`, `referrals`, `help`)
-  - user-provided identity (`name`, `DOB`)
-  - provider/specialty/topic/time cues
-- User-provided name and DOB are preferred for grounded form typing; conflicting identity triggers clarification instead of silent substitution.
-- Appointment disambiguation is deterministic and time-aware via fixture fields:
-  - `portalNow`
-  - `scheduledDateTime`
-  - `joinWindowStart`
-  - `joinWindowEnd`
-  - `status`
-  - `joinableNow`
-- Seeds `2` and `4` include adversarial ambiguity:
-  - multiple same-day appointments
-  - similar provider names
-  - one past/completed lookalike
-  - one not-yet-joinable card
-  - one joinable-now card
-- Below-the-fold required actions are intentionally present in eCheck-In and device setup to require grounded scrolling.
-- Help/caregiver support paths are real navigable flows:
-  - Need help joining
-  - Invite caregiver
-  - Call clinic
-  - Troubleshoot device
-  - Return to appointment
+### Hosted judge path
+Judges can verify the project without private credentials by using:
+- the public code repository
+- the deployed Cloud Run backend
+- the `/health` endpoint
+- the demo video
+- the Google Cloud deployment proof links in this README
 
-## Build and Verification
-Run:
-```bash
-npm run build --workspace extension
-npm run build --workspace sandbox-portal
-cd backend && npm run build
-cd backend && npm run smoke
-```
+### Local reproduction path
+Running the backend locally requires your own Google Cloud project and authentication via Application Default Credentials (ADC) for Vertex AI and Firestore.
 
-## Cloud Run Deploy (Copy/Paste)
-Locked runtime contract:
-- service: `silvervisit-backend`
-- region: `us-central1`
-- auth: `allow-unauthenticated`
-- timeout: `900s`
-- port: `8080`
-- contract file: [backend/deploy/cloud-run.contract.json](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/deploy/cloud-run.contract.json)
+This is intentional for security: private keys are never committed to the repository.
 
-Deploy and verify:
-```bash
-cd backend
-bash scripts/deploy-cloud-run.sh \
-  --service silvervisit-backend \
-  --project YOUR_GCP_PROJECT \
-  --region us-central1 \
-  --location us-central1 \
-  --timeout-seconds 900
-```
+## Exact Demo Runbook (Fastest Path)
+Recommended path: **PowerShell deploy script** `backend/scripts/deploy-cloud-run.ps1`.
 
-PowerShell equivalent:
-```powershell
-cd backend
-.\scripts\deploy-cloud-run.ps1 `
-  -Service silvervisit-backend `
-  -Project YOUR_GCP_PROJECT `
-  -Region us-central1 `
-  -Location us-central1 `
-  -TimeoutSeconds 900
-```
+1. **Folder:** repo root  
+   **Command:** `npm install`  
+   **Expected success result:** dependency install completes with no fatal errors.
 
-Direct deployed verifier run (if you already have a URL):
-```bash
-cd backend
-npm run verify:cloud-run -- \
-  --base-url https://YOUR_SERVICE_URL.run.app \
-  --service silvervisit-backend \
-  --region us-central1 \
-  --project YOUR_GCP_PROJECT
-```
+2. **Folder:** `backend/`  
+   **Command:** `Copy-Item .env.example .env -Force`  
+   **Expected success result:** `backend/.env` exists.
 
-Verifier output is judge-ready and includes:
-- deployed base URL, service, region
-- anonymous reachability proof (`GET /health` without auth)
-- Vertex/Gemini/Firestore runtime truth fields from `/health`
-- `/api/session/start` and `/api/plan-action` results
-- `/api/live` contract probe (`live_ready` or explicit live blocker)
-- deployed timeout verification (`900s`)
-- Node timeout diagnostics (`httpRequestTimeoutMs`, `httpHeadersTimeoutMs`, `httpKeepAliveTimeoutMs`)
-- explicit remaining manual browser proof step if live audio E2E is not possible from CLI
+3. **Folder:** `backend/`  
+   **Command:**  
+   ```powershell
+   @'
+   GOOGLE_GENAI_USE_VERTEXAI=true
+   GOOGLE_CLOUD_PROJECT=YOUR_GCP_PROJECT
+   GOOGLE_CLOUD_LOCATION=us-central1
+   GEMINI_ACTION_MODEL=gemini-2.5-flash
+   GEMINI_LIVE_MODEL=gemini-live-2.5-flash-native-audio
+   ENABLE_LIVE_API=true
+   ENABLE_FIRESTORE=true
+   FIRESTORE_COLLECTION_PREFIX=silvervisit
+   HTTP_REQUEST_TIMEOUT_MS=0
+   HTTP_HEADERS_TIMEOUT_MS=70000
+   HTTP_KEEPALIVE_TIMEOUT_MS=65000
+   '@ | Set-Content .env
+   ```  
+   **Expected success result:** `backend/.env` contains the required runtime keys.
 
-## Google Stack Evidence
-- **Planner call site**
-  - [backend/src/actionPlanner.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/actionPlanner.ts)
-  - Uses `client.models.generateContent` from `@google/genai` with Vertex config.
-- **Intent extraction**
-  - [backend/src/intentParser.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/intentParser.ts)
-  - Generic parser for destination, temporal cues, provider/topic, and user identity fields.
-- **Live call site**
-  - [backend/src/liveSession.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/liveSession.ts)
-  - Uses `client.live.connect` and forwards realtime `user_audio_chunk` / `audioStreamEnd`.
-- **Vertex client setup**
-  - [backend/src/vertex.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/vertex.ts)
-  - Constructs `GoogleGenAI({ vertexai: true, project, location })`.
-- **Runtime diagnostics**
-  - `GET /health` from [backend/src/routes/health.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/routes/health.ts)
-  - Includes `useVertexAI`, `vertexConfigured`, `liveEnabled`, `liveApiConfigured`, model names, Firestore mode/config.
-- **Cloud Run deploy proof**
-  - [backend/cloudbuild.yaml](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/cloudbuild.yaml)
-  - [backend/scripts/deploy-cloud-run.sh](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/deploy-cloud-run.sh)
-  - [backend/scripts/deploy-cloud-run.ps1](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/deploy-cloud-run.ps1)
-  - [backend/scripts/verify-cloud-run.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/verify-cloud-run.ts)
-  - [backend/deploy/cloud-run.contract.json](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/deploy/cloud-run.contract.json)
-  - [backend/Dockerfile](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/Dockerfile)
+4. **Folder:** any terminal  
+   **Command:**  
+   ```powershell
+   gcloud auth login
+   gcloud auth application-default login
+   gcloud config set project YOUR_GCP_PROJECT
+   ```  
+   **Expected success result:** gcloud account is authenticated and project is set.
 
-## Firestore Evidence
-- **Collections used**
-  - `sandboxFixtures`
-  - `sandboxRuns`
-  - `navigatorSessions`
-  - `liveEvents`
-  - `actionLogs`
-- **Repository**
-  - [backend/src/firestore.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/src/firestore.ts)
-- **Seed/bootstrap script**
-  - `cd backend && npm run seed:firestore`
-  - Script: [backend/scripts/seed-firestore.ts](/c:/Users/RUTHVIK/Downloads/silvervisit-ai/backend/scripts/seed-firestore.ts)
-- **Route mapping**
-  - `GET /api/sandbox/fixture` reads fixture by seed.
-  - `POST /api/sandbox/run/start` creates run + resolves fixture.
-  - `POST /api/sandbox/run/event` updates run progression.
-  - `POST /api/session/start` upserts navigator session.
-  - `POST /api/plan-action` records action log.
-  - `WS /api/live` records live lifecycle events.
+5. **Folder:** `backend/`  
+   **Command:**  
+   ```powershell
+   .\scripts\deploy-cloud-run.ps1 `
+     -Service silvervisit-backend `
+     -Project YOUR_GCP_PROJECT `
+     -Region us-central1 `
+     -Location us-central1 `
+     -TimeoutSeconds 900
+   ```  
+   **Expected success result:** deploy completes and prints deployed service URL.
 
-## Troubleshooting
-- `live_not_configured`:
-  - check `ENABLE_LIVE_API=true` and Vertex env values.
-- Firestore route failures:
-  - set `ENABLE_FIRESTORE=true` and either `FIRESTORE_EMULATOR_HOST` or valid ADC + `GOOGLE_CLOUD_PROJECT`.
-  - if production mode returns `PERMISSION_DENIED` for Firestore API, enable:
-    - `firestore.googleapis.com` for your project.
-- Deployment fails with auth errors:
-  - run `gcloud auth application-default login`
-  - verify required APIs are enabled: `run`, `cloudbuild`, `artifactregistry`, `aiplatform`, `firestore`
-- Secret hygiene check:
-  - run `cd backend && npm run secret:hygiene`
-- Mic denied:
-  - allow extension microphone permission and retry.
-- `EADDRINUSE: 8080 already in use`:
-  - only one backend server can bind to port `8080`.
-  - stop the previous backend process, then restart `cd backend && npm run dev`.
-- Unsupported page warning:
-  - open the sandbox tab (`localhost` or SilverVisit sandbox host) before running.
+6. **Folder:** `backend/`  
+   **Command:**  
+   ```powershell
+   npm run verify:cloud-run -- `
+     --base-url https://YOUR_CLOUD_RUN_URL.run.app `
+     --service silvervisit-backend `
+     --region us-central1 `
+     --project YOUR_GCP_PROJECT
+   ```  
+   **Expected success result:** verifier reports deployed checks passed (or explicit live warning with manual browser step).
+
+7. **Folder:** `frontend/extension/`  
+   **Command:**  
+   ```powershell
+   "VITE_BACKEND_BASE_URL=https://YOUR_CLOUD_RUN_URL.run.app" | Set-Content .env.production
+   ```  
+   **Expected success result:** extension production env points to deployed Cloud Run backend.
+
+8. **Folder:** repo root  
+   **Command:** `npm run build --workspace extension`  
+   **Expected success result:** extension build completes and `frontend/extension/dist` is generated.
+
+9. **Folder:** repo root  
+   **Command:** `npm run build --workspace sandbox-portal`  
+   **Expected success result:** sandbox build completes successfully.
+
+10. **Folder:** `frontend/extension/dist`  
+    **Command:** `start chrome://extensions`  
+    **Expected success result:** Chrome extensions page opens; load unpacked extension from `frontend/extension/dist`.
+
+11. **Folder:** repo root  
+    **Command:** `npm run dev --workspace sandbox-portal -- --host 127.0.0.1 --port 4173`  
+    **Expected success result:** sandbox runs locally and `http://127.0.0.1:4173/?seed=2` is available.
+
+12. **Folder:** browser (sandbox + sidepanel)  
+    **Command:** use sidepanel with goal: `Help me join my appointment today.`  
+    **Expected success result:** sidepanel shows deployed backend URL, executes grounded steps, and demo recording can start.
+
+## Pre-Recording Checklist
+- `https://YOUR_CLOUD_RUN_URL.run.app/health` returns `ok: true`.
+- Extension sidepanel shows `Backend: https://YOUR_CLOUD_RUN_URL.run.app`.
+- Unsupported-page guard is visible on a non-telehealth tab and clears on return to sandbox.
+- Supported sandbox flow runs from sidepanel on `http://127.0.0.1:4173/?seed=2`.
+- Architecture diagram source `docs/architecture.mmd` is present in repo.
+
+## If Something Fails
+- **gcloud auth/project mismatch**  
+  Fastest fix: rerun `gcloud auth login`, `gcloud auth application-default login`, `gcloud config set project YOUR_GCP_PROJECT`.
+- **Required Google APIs not enabled**  
+  Fastest fix: enable `run.googleapis.com`, `cloudbuild.googleapis.com`, `artifactregistry.googleapis.com`, `aiplatform.googleapis.com`, `firestore.googleapis.com`.
+- **Extension still calling localhost backend**  
+  Fastest fix: rewrite `frontend/extension/.env.production` with Cloud Run URL and rebuild extension.
+- **Firestore runtime not ready in `/health`**  
+  Fastest fix: grant Firestore permissions to the active runtime principal and rerun cloud verifier.
+- **Live appears idle/disconnected**  
+  Fastest fix: open supported sandbox tab and start mic/live; on unsupported tabs, live intentionally stays idle.
+
+## Architecture Overview
+- **Chrome MV3 Extension (`frontend/extension`)**: sidepanel UX + grounded turn orchestration + safe action dispatch.
+- **Sandbox Telehealth Portal (`frontend/sandbox-portal`)**: deterministic, realistic telehealth UI paths for navigation.
+- **Cloud Run Backend (`backend`)**: planner/session/sandbox/live routes, health diagnostics, deployment scripts.
+- **Vertex Gemini Planner**: screenshot-grounded planning via `@google/genai` in Vertex mode.
+- **Gemini Live Path**: websocket route for live start/ready and multimodal runtime events.
+- **Firestore Persistence**: deterministic fixtures + run/session/action/live evidence.
+- **Diagram source:** `docs/architecture.mmd`
+
+## How It Works
+1. User types or speaks a telehealth goal in the sidepanel.
+2. Extension captures current page context and screenshot.
+3. Backend plans the next action with Gemini on Vertex AI.
+4. Extension executes one grounded action safely.
+5. Session/run/live evidence is recorded through backend + Firestore paths.
+
+## Tech Stack
+- TypeScript
+- Node.js
+- React
+- Vite
+- Chrome Extension MV3
+- Google GenAI SDK (`@google/genai`)
+- Gemini 2.5 Flash
+- Gemini Live API
+- Google Cloud Run
+- Vertex AI
+- Cloud Firestore
+
+## Google Cloud + Gemini Proof
+- Gemini planner call site: `backend/src/actionPlanner.ts`
+- Gemini Live call site: `backend/src/liveSession.ts`
+- Vertex client configuration: `backend/src/vertex.ts`
+- Firestore repository: `backend/src/firestore.ts`
+- Cloud Run deployment automation: `backend/cloudbuild.yaml`, `backend/scripts/deploy-cloud-run.ps1`, `backend/scripts/deploy-cloud-run.sh`
+- Deployed runtime verifier: `backend/scripts/verify-cloud-run.ts`
+- Health diagnostics route: `backend/src/routes/health.ts`
+- Deployment contract manifest: `backend/deploy/cloud-run.contract.json`
+
+## Local Reproduction (Requires Your Own Google Cloud Credentials)
+1. Install dependencies: `npm install`
+2. Build extension: `npm run build --workspace extension`
+3. Build sandbox: `npm run build --workspace sandbox-portal`
+4. Build backend: `cd backend && npm run build`
+5. Run backend smoke: `cd backend && npm run smoke`
+6. Verify health endpoint: open `https://YOUR_CLOUD_RUN_URL.run.app/health`
+7. Run one demo goal in sidepanel on seed 2 sandbox.
+
+## Cloud Deployment
+- Recommended deploy automation entry point: `backend/scripts/deploy-cloud-run.ps1`
+- Cloud Build definition: `backend/cloudbuild.yaml`
+- Runtime contract: `backend/deploy/cloud-run.contract.json`
+- Deployed verification entry point: `backend/scripts/verify-cloud-run.ts`
+- Canonical verification command:
+  ```powershell
+  cd backend
+  npm run verify:cloud-run -- `
+    --base-url https://YOUR_CLOUD_RUN_URL.run.app `
+    --service silvervisit-backend `
+    --region us-central1 `
+    --project YOUR_GCP_PROJECT
+  ```
+
+## Demo / Submission Checklist
+- Backend deployed on Cloud Run.
+- `/health` is green and shows Vertex/Live/Firestore truth fields.
+- Extension production env points to Cloud Run backend.
+- Sandbox + extension demo flow works on supported telehealth page.
+- Architecture diagram source included (`docs/architecture.mmd`).
+- Cloud deployment automation files included and linked.
+
+## Known Limitations / Next Steps
+- Live end-to-end mic quality still depends on browser permissions and local device audio setup.
+- Full live browser interaction remains a manual validation step even with deployed CLI verification.
+- Future work: broader accessibility polish and additional guided recovery prompts for edge cases.
+
+## Devpost Submission Links
+- Public code repo: https://github.com/Ruthvik-Uttarala/silvervisit-ai
+- Google Cloud deployment proof (paste as GitHub blob links):
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/cloudbuild.yaml`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/src/routes/health.ts`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/src/vertex.ts`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/src/firestore.ts`
+- Automating Cloud Deployment bonus proof (paste as GitHub blob links):
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/scripts/deploy-cloud-run.ps1`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/scripts/deploy-cloud-run.sh`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/scripts/verify-cloud-run.ts`
+  - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/deploy/cloud-run.contract.json`

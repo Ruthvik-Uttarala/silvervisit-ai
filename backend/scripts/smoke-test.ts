@@ -1195,6 +1195,16 @@ async function main(): Promise<void> {
     assert.equal(typeof health.firestoreRuntimeReady, "boolean");
     console.log("[smoke] GET /health passed");
 
+    const rootRes = await fetch(`${baseUrl}/`);
+    assert.equal(rootRes.status, 200);
+    const rootBody = await rootRes.json();
+    assert.equal(rootBody.ok, true);
+    assert.equal(rootBody.service, "silvervisit-backend");
+    assert.equal(typeof rootBody.message, "string");
+    assert.ok(String(rootBody.message).includes("Use /health for status"));
+    assert.equal(rootBody.health, "/health");
+    console.log("[smoke] GET / root route passed");
+
     let seededFixtureRecords: Array<{ seed: number; fixture: any }> = [];
     if (health.firestoreConfigured) {
       const fixtureSeed2Res = await fetch(`${baseUrl}/api/sandbox/fixture?seed=2`);

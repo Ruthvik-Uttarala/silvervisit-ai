@@ -202,6 +202,7 @@ export default function App() {
   const [plannerState, setPlannerState] = useState<PlannerState>(DEFAULT_PLANNER_STATE);
   const [actionHistory, setActionHistory] = useState<ActionHistoryEntry[]>([]);
   const [goalQueue, setGoalQueue] = useState<GoalItem[]>(() => buildGoalQueue(DEFAULT_USER_GOAL));
+  const [backendReachable, setBackendReachable] = useState(false);
 
   const turnLockRef = useRef(false);
   const lastTurnAtRef = useRef(0);
@@ -416,6 +417,16 @@ export default function App() {
     },
     [sessionId],
   );
+
+  const refreshBackendHealth = useCallback(async (): Promise<void> => {
+    try {
+      await getHealth();
+      setBackendReachable(true);
+    } catch (error) {
+      setBackendReachable(false);
+      throw error;
+    }
+  }, []);
 
   const checkPageSupport = useCallback(async (): Promise<{ ok: boolean; url?: string }> => {
     try {
@@ -829,7 +840,7 @@ export default function App() {
     let turnContext: PageContextWithScreenshot | null = null;
 
     try {
-      await getHealth();
+      await refreshBackendHealth();
       const support = await checkPageSupport();
       if (!support.ok) return;
 
@@ -1177,15 +1188,16 @@ export default function App() {
     patchPlannerState,
     pushFeed,
     pushHistory,
+    refreshBackendHealth,
     sendLiveMessage,
     setComposerText,
     updateHistoryOutcome,
   ]);
 
   useEffect(() => {
-    void getHealth().catch(() => undefined);
+    void refreshBackendHealth().catch(() => undefined);
     void checkPageSupport();
-  }, [checkPageSupport]);
+  }, [checkPageSupport, refreshBackendHealth]);
 
   useEffect(() => {
     const onActivated = () => {
@@ -1247,6 +1259,15 @@ export default function App() {
   );
   const liveStateLabel = liveStatus === "live_ready" ? "Live Ready" : liveStatus === "socket_connected_not_ready" ? "Waiting Ready" : liveStatus;
   const supportReason = supportState.status === "unsupported" ? supportState.reason ?? buildUnsupportedPageReason(supportState.activeUrl) : "";
+  const liveStatusHint = useMemo(() => {
+    if (supportState.status === "unsupported") {
+      return "Live is idle because the current tab is not a supported telehealth page.";
+    }
+    if (backendReachable && liveStatus === "disconnected") {
+      return "Backend reachable. Live starts when you open a supported telehealth tab and start mic/live.";
+    }
+    return "";
+  }, [backendReachable, liveStatus, supportState.status]);
   const supportOverrideState: PlannerState | null =
     supportState.status === "unsupported"
       ? {
@@ -1269,6 +1290,7 @@ export default function App() {
             <span className="rounded-full bg-sky-100 px-3 py-1 font-semibold text-sky-700">Live: {liveStateLabel}</span>
             <span className="rounded-full bg-violet-100 px-3 py-1 font-semibold text-violet-700">Backend: {getBackendBaseUrl()}</span>
           </div>
+          {liveStatusHint ? <p className="mt-3 text-sm text-slate-600">{liveStatusHint}</p> : null}
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white/95 p-5 shadow-xl shadow-slate-200/30">

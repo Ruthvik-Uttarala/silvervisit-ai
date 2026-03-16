@@ -72,6 +72,22 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
   });
 
   try {
+    if (method === "GET" && pathname === "/") {
+      sendJson(
+        res,
+        200,
+        {
+          ok: true,
+          service: "silvervisit-backend",
+          message:
+            "SilverVisit backend is running. Use /health for status. Use the Chrome extension on a supported telehealth page for live navigation.",
+          health: "/health",
+        },
+        requestId,
+      );
+      return;
+    }
+
     if (method === "GET" && pathname === "/health") {
       handleHealth(res, config, requestId);
       return;
