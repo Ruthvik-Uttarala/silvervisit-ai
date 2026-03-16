@@ -18,6 +18,7 @@ import {
   serializePendingGoals,
   updateGoalStatus,
 } from "../lib/goalQueue";
+import { evaluateGoalCompletion } from "../lib/goalProgress";
 import { LiveAudioRecorder } from "../lib/liveAudio";
 import {
   createTurnGenerationToken,
@@ -91,34 +92,6 @@ interface ActionHistoryEntry {
   summary: string;
   outcome?: string;
   timestamp: string;
-}
-
-function isJoinGoalText(goal: string): boolean {
-  const normalized = goal.toLowerCase();
-  return /\b(join|appointment|check ?in|waiting room|visit|enter call)\b/.test(normalized);
-}
-
-function hasVisibleGoalCompletionEvidence(goal: string, context: PageContextWithScreenshot, plan: PlanActionResponse): {
-  complete: boolean;
-  evidence: string;
-} {
-  const visible = context.snapshot.visibleText.join(" ").toLowerCase();
-  if (plan.status === "ok" && plan.action.type === "done") {
-    return { complete: true, evidence: "Planner returned done with grounded evidence." };
-  }
-  if (isJoinGoalText(goal)) {
-    if (/\bjoined\b|\byou have joined\b|\bin call\b/.test(visible)) {
-      return { complete: true, evidence: "Joined-call evidence is visible on the page." };
-    }
-    return { complete: false, evidence: "Join goal still in prerequisite state." };
-  }
-  if (
-    /\b(report|result|referral|prescription|message|note|avs|after visit|past visit)\b/.test(goal.toLowerCase()) &&
-    /detail|summary|return to related appointment|message thread|linked appointment/i.test(visible)
-  ) {
-    return { complete: true, evidence: "Requested detail/item evidence is visible." };
-  }
-  return { complete: false, evidence: "Final goal evidence not visible yet." };
 }
 
 function nowLabel(): string {
@@ -988,7 +961,7 @@ export default function App() {
         timestamp: nowLabel(),
       });
       if (plan.status === "ok" && plan.action.type === "done" && turnContext) {
-        const completion = hasVisibleGoalCompletionEvidence(goal, turnContext, plan);
+        const completion = evaluateGoalCompletion(goal, turnContext.snapshot.visibleText, plan);
         if (completion.complete) {
           const completedQueue = updateGoalStatus(goalQueueRef.current, activeGoal.id, "completed", {
             completionEvidence: completion.evidence,
@@ -1135,7 +1108,7 @@ export default function App() {
         }
         if (plan.action.type === "click") setClickExecutions((v) => v + 1);
         if (plan.action.type === "type") setTypeExecutions((v) => v + 1);
-        const completion = hasVisibleGoalCompletionEvidence(goal, context, plan);
+        const completion = evaluateGoalCompletion(goal, context.snapshot.visibleText, plan);
         if (completion.complete) {
           const completedQueue = updateGoalStatus(goalQueueRef.current, activeGoal.id, "completed", {
             completionEvidence: completion.evidence,

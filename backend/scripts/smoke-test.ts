@@ -3,12 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
-import { enforcePlannerGuardrailsForTesting } from "../src/actionPlanner";
+import {
+  enforcePlannerGuardrailsForTesting,
+  resolveObviousNextActionForTesting,
+} from "../src/actionPlanner";
 import { isVertexConfigured, loadConfig } from "../src/config";
 import { parseNavigatorIntent } from "../src/intentParser";
 import { startServer } from "../src/server";
 import { PlanActionRequest, PlanActionResponse } from "../src/types";
 import { shouldEmitFeedEntry } from "../../frontend/extension/src/lib/feedDeduper";
+import { evaluateGoalCompletion } from "../../frontend/extension/src/lib/goalProgress";
 import {
   buildGoalQueue,
   getActiveGoal,
@@ -406,6 +410,54 @@ function runGoalQueueRegression(): void {
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].text, "Open my latest referral");
   assert.equal(serializePendingGoals(remaining), "Open my latest referral");
+}
+
+function runJoinGoalCompletionRegression(): void {
+  const joinGoal = "Okay can you take me to my appointment which is today and help me join it";
+  const intermediatePlan: Pick<PlanActionResponse, "status" | "action"> = {
+    status: "ok",
+    action: { type: "done" },
+  };
+
+  const echeckinStarted = evaluateGoalCompletion(
+    joinGoal,
+    ["eCheck-In", "Complete This Task", "Finish eCheck-In"],
+    intermediatePlan,
+  );
+  assert.equal(echeckinStarted.complete, false);
+
+  const echeckinFinished = evaluateGoalCompletion(
+    joinGoal,
+    ["Device Setup", "Continue to Waiting Room", "Provider not ready yet"],
+    intermediatePlan,
+  );
+  assert.equal(echeckinFinished.complete, false);
+
+  const waitingRoom = evaluateGoalCompletion(
+    joinGoal,
+    ["Virtual Waiting Room", "You are not joined yet until Enter Call is completed."],
+    intermediatePlan,
+  );
+  assert.equal(waitingRoom.complete, false);
+
+  const joined = evaluateGoalCompletion(
+    joinGoal,
+    ["You have joined the visit", "Dr. Lena Cho is in room and ready for the call."],
+    intermediatePlan,
+  );
+  assert.equal(joined.complete, true);
+
+  const queue = buildGoalQueue(joinGoal);
+  const inProgress = updateGoalStatus(queue, queue[0].id, "in_progress");
+  const completionBeforeJoin = evaluateGoalCompletion(
+    joinGoal,
+    ["eCheck-In", "Finish eCheck-In"],
+    { status: "ok", action: { type: "click", targetId: "echeckin-finish-btn" } },
+  );
+  assert.equal(completionBeforeJoin.complete, false);
+  const stillActive = getActiveGoal(inProgress);
+  assert.equal(Boolean(stillActive), true);
+  assert.equal(stillActive?.status, "in_progress");
 }
 
 function runFirestoreDiagnosticsRegression(): void {
@@ -975,9 +1027,131 @@ function runPlannerGuardrailRegression(): void {
   assert.equal(nutritionReferralResponse.action.targetId, "open-referral-ref-nutrition-btn");
 }
 
+function runJoinSubflowContinuationRegression(): void {
+  const joinGoal = "Help me attend the appointment I have at 3 PM.";
+  const echeckinRequest: PlanActionRequest = {
+    sessionId: "join-subflow-regression",
+    userGoal: joinGoal,
+    pageUrl: "http://127.0.0.1:4173/?seed=3",
+    pageTitle: "SilverVisit eCheck-In",
+    visibleText: ["eCheck-In", "Required items are intentionally spread down the page.", "Upcoming Appointments"],
+    elements: [
+      {
+        id: "echeckin-finish-btn",
+        text: "Finish eCheck-In",
+        role: "button",
+        x: 10,
+        y: 700,
+        width: 180,
+        height: 40,
+        visible: true,
+        enabled: false,
+      },
+      {
+        id: "nav-upcoming-btn",
+        text: "Upcoming",
+        role: "button",
+        x: 10,
+        y: 10,
+        width: 120,
+        height: 32,
+        visible: true,
+        enabled: true,
+      },
+    ],
+  };
+  const echeckinNext = resolveObviousNextActionForTesting(
+    echeckinRequest,
+    parseNavigatorIntent(joinGoal),
+  );
+  assert.ok(echeckinNext, "Expected deterministic eCheck-In continuation action.");
+  assert.equal(echeckinNext?.action.type, "scroll");
+  assert.notEqual(echeckinNext?.action.targetId, "nav-upcoming-btn");
+
+  const loginRequest: PlanActionRequest = {
+    sessionId: "login-regression",
+    userGoal: joinGoal,
+    pageUrl: "http://127.0.0.1:4173/?seed=3",
+    pageTitle: "SilverVisit Login",
+    visibleText: [
+      "Sign in",
+      "Deterministic credentials: Harper Lewis · 08/28/1956 · Harper-Checkin-8820",
+      "Enter seeded credentials to continue.",
+    ],
+    elements: [
+      {
+        id: "login-full-name-input",
+        text: "Full name",
+        role: "textbox",
+        x: 10,
+        y: 10,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "login-dob-input",
+        text: "Date of birth",
+        role: "textbox",
+        x: 10,
+        y: 60,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "login-password-input",
+        text: "Password",
+        role: "textbox",
+        x: 10,
+        y: 110,
+        width: 200,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "login-continue-btn",
+        text: "Continue to Dashboard",
+        role: "button",
+        x: 10,
+        y: 160,
+        width: 220,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+    ],
+  };
+  const loginStep = resolveObviousNextActionForTesting(loginRequest, parseNavigatorIntent(joinGoal));
+  assert.ok(loginStep, "Expected deterministic login prerequisite action.");
+  assert.equal(loginStep?.status, "ok");
+  assert.equal(loginStep?.action.type, "type");
+  assert.ok(
+    ["login-full-name-input", "login-dob-input", "login-password-input"].includes(
+      loginStep?.action.targetId ?? "",
+    ),
+  );
+
+  const dashboardAfterLoginCompletion = evaluateGoalCompletion(
+    joinGoal,
+    ["Patient Video Visit Center", "Upcoming Appointments"],
+    { status: "ok", action: { type: "click", targetId: "login-continue-btn" } },
+  );
+  assert.equal(dashboardAfterLoginCompletion.complete, false);
+
+  const queue = buildGoalQueue(joinGoal);
+  const progressed = updateGoalStatus(queue, queue[0].id, "in_progress");
+  assert.equal(getActiveGoal(progressed)?.status, "in_progress");
+}
+
 async function main(): Promise<void> {
   runGoalQueueRegression();
   console.log("[smoke] Goal queue persistence regressions passed");
+  runJoinGoalCompletionRegression();
+  console.log("[smoke] Join-goal final completion gating regressions passed");
   runTranscriptMergeRegression();
   console.log("[smoke] Transcript merge regression checks passed");
   runFeedDeduperRegression();
@@ -990,6 +1164,8 @@ async function main(): Promise<void> {
   console.log("[smoke] Generic intent parser regression checks passed");
   runPlannerGuardrailRegression();
   console.log("[smoke] Planner guardrail regression checks passed");
+  runJoinSubflowContinuationRegression();
+  console.log("[smoke] Join subflow continuation/login prerequisite regressions passed");
   runFirestoreDiagnosticsRegression();
   console.log("[smoke] Firestore diagnostics semantics regressions passed");
 

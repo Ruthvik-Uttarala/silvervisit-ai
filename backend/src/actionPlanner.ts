@@ -1138,6 +1138,58 @@ function buildDeterministicResponse(
   };
 }
 
+type JoinSubflowStage =
+  | "login"
+  | "appointment_details"
+  | "echeckin"
+  | "device_setup"
+  | "waiting_room"
+  | "dashboard"
+  | "unknown";
+
+function hasVisiblePhrase(request: PlanActionRequest, pattern: RegExp): boolean {
+  return request.visibleText.some((line) => pattern.test(line));
+}
+
+function inferJoinSubflowStage(request: PlanActionRequest): JoinSubflowStage {
+  const ids = new Set(request.elements.map((element) => element.id));
+  if (
+    ids.has("login-full-name-input") ||
+    ids.has("login-dob-input") ||
+    ids.has("login-password-input")
+  ) {
+    return "login";
+  }
+  if (ids.has("details-start-echeckin-btn") || ids.has("details-open-device-setup-btn")) {
+    return "appointment_details";
+  }
+  if (
+    ids.has("echeckin-finish-btn") ||
+    request.elements.some((element) => /^complete-.+-btn$/i.test(element.id)) ||
+    hasVisiblePhrase(request, /\becheck-?in\b/i)
+  ) {
+    return "echeckin";
+  }
+  if (
+    ids.has("finish-device-test-btn") ||
+    request.elements.some((element) => /^run-device-.+-btn$/i.test(element.id)) ||
+    hasVisiblePhrase(request, /\bdevice setup\b/i)
+  ) {
+    return "device_setup";
+  }
+  if (
+    ids.has("waiting-check-provider-ready-btn") ||
+    ids.has("enter-call-btn") ||
+    hasVisiblePhrase(request, /\bwaiting room\b/i)
+  ) {
+    return "waiting_room";
+  }
+  if (ids.has("dashboard-open-upcoming-btn")) {
+    return "dashboard";
+  }
+  return "unknown";
+}
+
 function resolveObviousNextAction(
   request: PlanActionRequest,
   parsedIntent: ParsedNavigatorIntent,
@@ -1182,6 +1234,127 @@ function resolveObviousNextAction(
   }
 
   const elementMap = new Map(request.elements.map((element) => [element.id, element]));
+  const stage = inferJoinSubflowStage(request);
+
+  if (stage === "appointment_details") {
+    const detailIds = [
+      "recover-correct-appointment-btn",
+      "details-start-echeckin-btn",
+      "details-open-device-setup-btn",
+      "details-enter-waiting-room-btn",
+    ];
+    for (const id of detailIds) {
+      const target = elementMap.get(id);
+      if (!isInteractableElement(target)) {
+        continue;
+      }
+      return buildDeterministicResponse(
+        "I found the next required step in your appointment flow and will continue.",
+        { type: "click", targetId: id },
+        `Join-flow stage ${stage} selected ${id}.`,
+        0.72,
+      );
+    }
+  }
+
+  if (stage === "echeckin") {
+    const nextTask = request.elements.find(
+      (element) =>
+        /^complete-.+-btn$/i.test(element.id) &&
+        isInteractableElement(element) &&
+        !/completed/i.test(element.text),
+    );
+    if (nextTask) {
+      return buildDeterministicResponse(
+        "I found the next required eCheck-In task and will complete it.",
+        { type: "click", targetId: nextTask.id },
+        `Join-flow stage echeckin selected required task ${nextTask.id}.`,
+        0.72,
+      );
+    }
+    const finishEcheckin = elementMap.get("echeckin-finish-btn");
+    if (isInteractableElement(finishEcheckin)) {
+      return buildDeterministicResponse(
+        "eCheck-In is ready to finish, so I will continue to the next prerequisite.",
+        { type: "click", targetId: "echeckin-finish-btn" },
+        "Join-flow stage echeckin selected echeckin-finish-btn.",
+        0.72,
+      );
+    }
+    // Stay inside the active subflow instead of looping back to top navigation.
+    return buildDeterministicResponse(
+      "The next eCheck-In control is likely below the fold, so I will scroll to continue this flow.",
+      { type: "scroll", direction: "down", amount: "medium" },
+      "Join-flow stage echeckin used scroll progression to avoid nav loopback.",
+      0.7,
+    );
+  }
+
+  if (stage === "device_setup") {
+    const nextDeviceCheck = request.elements.find(
+      (element) =>
+        /^run-device-.+-btn$/i.test(element.id) &&
+        isInteractableElement(element) &&
+        !/passed/i.test(element.text),
+    );
+    if (nextDeviceCheck) {
+      return buildDeterministicResponse(
+        "I found the next required device check and will run it.",
+        { type: "click", targetId: nextDeviceCheck.id },
+        `Join-flow stage device_setup selected ${nextDeviceCheck.id}.`,
+        0.72,
+      );
+    }
+    const finishDevice = elementMap.get("finish-device-test-btn");
+    if (isInteractableElement(finishDevice)) {
+      return buildDeterministicResponse(
+        "Device checks are ready, so I will continue to waiting room progression.",
+        { type: "click", targetId: "finish-device-test-btn" },
+        "Join-flow stage device_setup selected finish-device-test-btn.",
+        0.72,
+      );
+    }
+    return buildDeterministicResponse(
+      "The next device setup control is likely below the fold, so I will scroll to continue.",
+      { type: "scroll", direction: "down", amount: "medium" },
+      "Join-flow stage device_setup used scroll progression to avoid nav loopback.",
+      0.7,
+    );
+  }
+
+  if (stage === "waiting_room") {
+    const enterCall = elementMap.get("enter-call-btn");
+    if (isInteractableElement(enterCall)) {
+      return buildDeterministicResponse(
+        "I found Enter Call and will continue to complete your join goal.",
+        { type: "click", targetId: "enter-call-btn" },
+        "Join-flow stage waiting_room selected enter-call-btn.",
+        0.73,
+      );
+    }
+    const refreshReady = elementMap.get("waiting-check-provider-ready-btn");
+    if (isInteractableElement(refreshReady)) {
+      return buildDeterministicResponse(
+        "You are not joined yet, so I will refresh provider readiness in the waiting room.",
+        { type: "click", targetId: "waiting-check-provider-ready-btn" },
+        "Join-flow stage waiting_room selected waiting-check-provider-ready-btn.",
+        0.71,
+      );
+    }
+  }
+
+  if (stage === "dashboard") {
+    const dashboardUpcoming = elementMap.get("dashboard-open-upcoming-btn");
+    if (isInteractableElement(dashboardUpcoming)) {
+      return buildDeterministicResponse(
+        "I found the next appointment navigation step and will continue.",
+        { type: "click", targetId: "dashboard-open-upcoming-btn" },
+        "Join-flow stage dashboard selected dashboard-open-upcoming-btn.",
+        0.7,
+      );
+    }
+  }
+
   const prioritizedIds = [
     "recover-correct-appointment-btn",
     "enter-call-btn",
@@ -1192,7 +1365,6 @@ function resolveObviousNextAction(
     "details-open-device-setup-btn",
     "finish-device-test-btn",
     "dashboard-open-upcoming-btn",
-    "nav-upcoming-btn",
   ];
   for (const id of prioritizedIds) {
     const target = elementMap.get(id);
@@ -1210,7 +1382,24 @@ function resolveObviousNextAction(
     );
   }
 
+  const navUpcoming = elementMap.get("nav-upcoming-btn");
+  if (isInteractableElement(navUpcoming) && stage === "unknown") {
+    return buildDeterministicResponse(
+      "I found the appointment navigation control and will continue.",
+      { type: "click", targetId: "nav-upcoming-btn" },
+      "Join-flow fallback selected nav-upcoming-btn only after downstream subflow checks.",
+      0.68,
+    );
+  }
+
   return null;
+}
+
+export function resolveObviousNextActionForTesting(
+  request: PlanActionRequest,
+  parsedIntent: ParsedNavigatorIntent,
+): PlanActionResponse | null {
+  return resolveObviousNextAction(request, parsedIntent);
 }
 
 export async function planNextAction(request: PlanActionRequest, context: PlannerContext): Promise<PlanActionResponse> {
