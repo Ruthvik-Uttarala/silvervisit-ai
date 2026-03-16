@@ -160,7 +160,9 @@ function inferSafetyState(
   fallback: SafetyState = "ready_for_next_step",
 ): SafetyState {
   const lines = context.snapshot.visibleText.join(" ").toLowerCase();
-  if (/\bjoined\b|\byou have joined\b|\bin call\b/.test(lines)) {
+  const hasNegativeJoinPhrase =
+    /\byou are not joined\b|\bnot joined yet\b|\bnot yet joined\b|\bnot fully joined\b/.test(lines);
+  if (!hasNegativeJoinPhrase && /\byou have joined the visit\b|\bjoined the visit\b|\bvisit connected\b|\bentered (?:the )?call\b/.test(lines)) {
     return "joined";
   }
   if (/\bwaiting room\b/.test(lines)) {

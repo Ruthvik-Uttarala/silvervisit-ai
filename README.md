@@ -28,6 +28,7 @@ Judges can verify the project without private credentials by using:
 - the `/health` endpoint
 - the demo video
 - the Google Cloud deployment proof links in this README
+- raw sandbox fixture proof: `https://silvervisit-backend-oayic6vnja-uc.a.run.app/api/sandbox/fixture?seed=2`
 
 ### Local reproduction path
 Running the backend locally requires your own Google Cloud project and authentication via Application Default Credentials (ADC) for Vertex AI and Firestore.
@@ -116,18 +117,18 @@ Recommended path: **PowerShell deploy script** `backend/scripts/deploy-cloud-run
     **Expected success result:** Chrome extensions page opens; load unpacked extension from `frontend/extension/dist`.
 
 11. **Folder:** repo root  
-    **Command:** `npm run dev --workspace sandbox-portal -- --host 127.0.0.1 --port 4173`  
-    **Expected success result:** sandbox runs locally and `http://127.0.0.1:4173/?seed=2` is available.
+    **Command:** `npm run preview --workspace sandbox-portal -- --host localhost --port 4173`  
+    **Expected success result:** sandbox runs locally and `http://localhost:4173/?seed=2` is available.
 
 12. **Folder:** browser (sandbox + sidepanel)  
     **Command:** use sidepanel with goal: `Help me join my appointment today.`  
-    **Expected success result:** sidepanel shows deployed backend URL, executes grounded steps, and demo recording can start.
+    **Expected success result:** sidepanel shows deployed backend URL, executes grounded steps, and the sandbox is open at `http://localhost:4173/?seed=2`.
 
 ## Pre-Recording Checklist
 - `https://YOUR_CLOUD_RUN_URL.run.app/health` returns `ok: true`.
 - Extension sidepanel shows `Backend: https://YOUR_CLOUD_RUN_URL.run.app`.
 - Unsupported-page guard is visible on a non-telehealth tab and clears on return to sandbox.
-- Supported sandbox flow runs from sidepanel on `http://127.0.0.1:4173/?seed=2`.
+- Supported sandbox flow runs from sidepanel on `http://localhost:4173/?seed=2`.
 - Architecture diagram source `docs/architecture.mmd` is present in repo.
 
 ## If Something Fails
@@ -231,3 +232,7 @@ Recommended path: **PowerShell deploy script** `backend/scripts/deploy-cloud-run
   - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/scripts/deploy-cloud-run.sh`
   - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/scripts/verify-cloud-run.ts`
   - `https://github.com/Ruthvik-Uttarala/silvervisit-ai/blob/main/backend/deploy/cloud-run.contract.json`
+- Public sandbox fixture proof (raw JSON evidence):
+  - `https://silvervisit-backend-oayic6vnja-uc.a.run.app/api/sandbox/fixture?seed=2`
+- Public backend health proof:
+  - `https://silvervisit-backend-oayic6vnja-uc.a.run.app/health` 

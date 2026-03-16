@@ -360,10 +360,15 @@ function extractVisibleSandboxCredentials(request: PlanActionRequest): Credentia
     if (startIndex < 0) {
       continue;
     }
-    const rawPayload = line.slice(startIndex + prefix.length).trim();
-    const canonicalPayload = rawPayload.replace(/\s-\s/g, "|");
+    const rawPayload = line
+      .slice(startIndex + prefix.length)
+      .replace(/\u00c2/g, "")
+      .trim();
+    const canonicalPayload = rawPayload
+      .replace(/\s+-\s+/g, "|")
+      .replace(/[·•]/g, "|");
     const chunks = canonicalPayload
-      .split(/\s*[·|]\s*/g)
+      .split(/\s*\|\s*/g)
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
     if (chunks.length < 3) {
@@ -377,6 +382,28 @@ function extractVisibleSandboxCredentials(request: PlanActionRequest): Credentia
     return { patientName, patientDob, loginSecret };
   }
   return null;
+}
+
+const NEGATIVE_JOIN_PATTERNS = [
+  /\byou are not joined\b/i,
+  /\bnot joined yet\b/i,
+  /\bnot yet joined\b/i,
+  /\bnot fully joined\b/i,
+];
+
+const POSITIVE_JOIN_PATTERNS = [
+  /\byou have joined the visit\b/i,
+  /\bjoined the visit\b/i,
+  /\bvisit connected\b/i,
+  /\bentered (?:the )?call\b/i,
+  /\bconnected to (?:the )?visit\b/i,
+];
+
+function hasExplicitJoinLine(line: string): boolean {
+  if (NEGATIVE_JOIN_PATTERNS.some((pattern) => pattern.test(line))) {
+    return false;
+  }
+  return POSITIVE_JOIN_PATTERNS.some((pattern) => pattern.test(line));
 }
 function startOfDayMs(value: number): number {
   const date = new Date(value);
@@ -473,6 +500,7 @@ function scoreTemporalFit(
 
   const cues = new Set(parsedIntent.temporalCues);
   if (cues.has("today")) score += dayDelta === 0 ? 34 : -10;
+  if (cues.has("current")) score += dayDelta === 0 ? 20 : -8;
   if (cues.has("tomorrow")) score += dayDelta === 1 ? 28 : -8;
   if (cues.has("yesterday")) score += dayDelta === -1 ? 28 : -8;
   if (cues.has("last_week")) score += dayDelta < 0 && dayDelta >= -7 ? 20 : -6;
@@ -560,6 +588,8 @@ function resolveDestinationCandidateAction(
     return { reasoning: "No deterministic destination candidate resolver for this turn.", tie: false, fallbackUsed: false };
   }
   const portalNowMs = parsePortalNowMs(request);
+  const portalDay = startOfDayMs(portalNowMs);
+  const cues = new Set(parsedIntent.temporalCues);
   const interactableElements = request.elements.filter((element) => isInteractableElement(element));
   const candidates: RankedDestinationCandidate[] = [];
   const requestedDateDay = parseIntentDateMs(parsedIntent.explicitDate, portalNowMs);
@@ -638,10 +668,22 @@ function resolveDestinationCandidateAction(
       score -= 34;
     }
     if (parsedIntent.destination === "appointments") {
+      const sameDayAsPortalNow = recordDay === portalDay;
       if (record.joinableNow === true) score += 35;
-      if (record.status === "waiting_room" || record.status === "ready_to_join") score += 22;
-      if (record.status === "today") score += 10;
-      if (record.status === "past" || record.status === "completed" || record.status === "canceled") score -= 22;
+      if (record.status === "waiting_room" || record.status === "ready_to_join") score += 28;
+      if (record.status === "today") score += 18;
+      if (record.status === "upcoming" && sameDayAsPortalNow) score += 12;
+      if (cues.has("today") || cues.has("current")) {
+        score += sameDayAsPortalNow ? 44 : -24;
+      }
+      if (
+        record.status === "past" ||
+        record.status === "completed" ||
+        record.status === "canceled" ||
+        record.status === "rescheduled"
+      ) {
+        score -= 34;
+      }
     }
 
     const reasoningParts: string[] = [];
@@ -827,7 +869,11 @@ function detectCredentialActionFromPage(
 }
 
 function hasJoinedEvidence(request: PlanActionRequest): boolean {
-  return request.visibleText.some((line) => /\bjoined\b|\bin call\b|\bvisit connected\b/i.test(line));
+  const ids = new Set(request.elements.map((element) => element.id));
+  if (ids.has("step-joined-call-card") || ids.has("joined-call-step-title")) {
+    return true;
+  }
+  return request.visibleText.some((line) => hasExplicitJoinLine(line));
 }
 
 function hasIdentityConflict(request: PlanActionRequest, parsedIntent: ParsedNavigatorIntent): boolean {
@@ -1124,15 +1170,22 @@ function buildDeterministicResponse(
   action: ActionObject,
   reasoningSummary: string,
   confidence = 0.72,
+  groundingHints?: { elementIds?: string[]; visibleText?: string[] },
 ): PlanActionResponse {
+  const hintedIds = (groundingHints?.elementIds ?? [])
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  const hintedText = (groundingHints?.visibleText ?? [])
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
   return {
     status: "ok",
     message,
     action,
     confidence: clampConfidence(confidence),
     grounding: {
-      matchedElementIds: action.targetId ? [action.targetId] : [],
-      matchedVisibleText: [],
+      matchedElementIds: action.targetId ? [action.targetId] : hintedIds,
+      matchedVisibleText: hintedText,
       reasoningSummary: reasoningSummary.slice(0, 240),
     },
   };
@@ -1190,6 +1243,23 @@ function inferJoinSubflowStage(request: PlanActionRequest): JoinSubflowStage {
   return "unknown";
 }
 
+function hasDownstreamJoinCue(request: PlanActionRequest): boolean {
+  const ids = new Set(request.elements.map((element) => element.id));
+  if (
+    ids.has("echeckin-finish-btn") ||
+    ids.has("finish-device-test-btn") ||
+    ids.has("waiting-check-provider-ready-btn") ||
+    ids.has("enter-call-btn") ||
+    request.elements.some((element) => /^complete-.+-btn$/i.test(element.id)) ||
+    request.elements.some((element) => /^run-device-.+-btn$/i.test(element.id))
+  ) {
+    return true;
+  }
+  return request.visibleText.some((line) =>
+    /\becheck-?in\b|\bdevice setup\b|\bwaiting room\b|\bprovider ready\b|\benter call\b/i.test(line),
+  );
+}
+
 function resolveObviousNextAction(
   request: PlanActionRequest,
   parsedIntent: ParsedNavigatorIntent,
@@ -1232,16 +1302,29 @@ function resolveObviousNextAction(
   if (!intentIsJoinFlow) {
     return null;
   }
-
   const elementMap = new Map(request.elements.map((element) => [element.id, element]));
+  if (hasJoinedEvidence(request)) {
+    const joinedEvidenceIds = ["step-joined-call-card", "joined-call-step-title"].filter((id) => elementMap.has(id));
+    const joinedEvidenceLine = request.visibleText.find((line) => hasExplicitJoinLine(line));
+    return buildDeterministicResponse(
+      "I found explicit evidence that you are joined to the visit.",
+      { type: "done" },
+      "Join-flow completion evidence is visible on the current screen.",
+      0.79,
+      {
+        elementIds: joinedEvidenceIds,
+        visibleText: joinedEvidenceLine ? [joinedEvidenceLine] : [],
+      },
+    );
+  }
   const stage = inferJoinSubflowStage(request);
 
   if (stage === "appointment_details") {
     const detailIds = [
       "recover-correct-appointment-btn",
+      "details-enter-waiting-room-btn",
       "details-start-echeckin-btn",
       "details-open-device-setup-btn",
-      "details-enter-waiting-room-btn",
     ];
     for (const id of detailIds) {
       const target = elementMap.get(id);
@@ -1282,11 +1365,21 @@ function resolveObviousNextAction(
       );
     }
     // Stay inside the active subflow instead of looping back to top navigation.
+    const echeckinEvidenceId = request.elements.find(
+      (element) => /^complete-.+-btn$/i.test(element.id) || element.id === "echeckin-finish-btn",
+    )?.id;
+    const echeckinEvidenceLine =
+      request.visibleText.find((line) => /\becheck-?in\b|complete this task|finish echeck-?in/i.test(line)) ??
+      "eCheck-In";
     return buildDeterministicResponse(
       "The next eCheck-In control is likely below the fold, so I will scroll to continue this flow.",
       { type: "scroll", direction: "down", amount: "medium" },
       "Join-flow stage echeckin used scroll progression to avoid nav loopback.",
       0.7,
+      {
+        elementIds: echeckinEvidenceId ? [echeckinEvidenceId] : [],
+        visibleText: [echeckinEvidenceLine],
+      },
     );
   }
 
@@ -1314,11 +1407,21 @@ function resolveObviousNextAction(
         0.72,
       );
     }
+    const deviceEvidenceId = request.elements.find(
+      (element) => /^run-device-.+-btn$/i.test(element.id) || element.id === "finish-device-test-btn",
+    )?.id;
+    const deviceEvidenceLine =
+      request.visibleText.find((line) => /\bdevice setup\b|\brun check\b|continue to waiting room/i.test(line)) ??
+      "Device setup";
     return buildDeterministicResponse(
       "The next device setup control is likely below the fold, so I will scroll to continue.",
       { type: "scroll", direction: "down", amount: "medium" },
       "Join-flow stage device_setup used scroll progression to avoid nav loopback.",
       0.7,
+      {
+        elementIds: deviceEvidenceId ? [deviceEvidenceId] : [],
+        visibleText: [deviceEvidenceLine],
+      },
     );
   }
 
@@ -1383,12 +1486,37 @@ function resolveObviousNextAction(
   }
 
   const navUpcoming = elementMap.get("nav-upcoming-btn");
-  if (isInteractableElement(navUpcoming) && stage === "unknown") {
+  if (isInteractableElement(navUpcoming) && stage === "unknown" && !hasDownstreamJoinCue(request)) {
     return buildDeterministicResponse(
       "I found the appointment navigation control and will continue.",
       { type: "click", targetId: "nav-upcoming-btn" },
       "Join-flow fallback selected nav-upcoming-btn only after downstream subflow checks.",
       0.68,
+    );
+  }
+  if (stage === "unknown" && hasDownstreamJoinCue(request)) {
+    const downstreamEvidenceId = request.elements.find(
+      (element) =>
+        /^complete-.+-btn$/i.test(element.id) ||
+        /^run-device-.+-btn$/i.test(element.id) ||
+        element.id === "echeckin-finish-btn" ||
+        element.id === "finish-device-test-btn" ||
+        element.id === "waiting-check-provider-ready-btn" ||
+        element.id === "enter-call-btn",
+    )?.id;
+    const downstreamEvidenceLine =
+      request.visibleText.find((line) =>
+        /\becheck-?in\b|\bdevice setup\b|\bwaiting room\b|\bprovider ready\b|\benter call\b/i.test(line),
+      ) ?? "Join flow in progress";
+    return buildDeterministicResponse(
+      "I found join-flow cues on this page, so I will scroll to reveal the next required control.",
+      { type: "scroll", direction: "down", amount: "medium" },
+      "Unknown join-flow stage used scroll progression to avoid restarting navigation.",
+      0.68,
+      {
+        elementIds: downstreamEvidenceId ? [downstreamEvidenceId] : [],
+        visibleText: [downstreamEvidenceLine],
+      },
     );
   }
 
@@ -1518,6 +1646,3 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
     );
   }
 }
-
-
-

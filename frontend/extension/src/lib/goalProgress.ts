@@ -11,7 +11,12 @@ export function isJoinGoalText(goal: string): boolean {
 }
 
 function hasJoinedEvidence(visibleText: string): boolean {
-  return /\byou have joined\b|\bjoined the visit\b|\bin call\b|\bvisit connected\b/.test(visibleText);
+  if (/\byou are not joined\b|\bnot joined yet\b|\bnot yet joined\b|\bnot fully joined\b/.test(visibleText)) {
+    return false;
+  }
+  return /\byou have joined the visit\b|\bjoined the visit\b|\bvisit connected\b|\bentered (?:the )?call\b/.test(
+    visibleText,
+  );
 }
 
 export function evaluateGoalCompletion(
@@ -48,4 +53,3 @@ export function evaluateGoalCompletion(
 
   return { complete: false, evidence: "Final goal evidence not visible yet." };
 }
-

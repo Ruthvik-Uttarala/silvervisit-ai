@@ -439,6 +439,12 @@ function runJoinGoalCompletionRegression(): void {
     intermediatePlan,
   );
   assert.equal(waitingRoom.complete, false);
+  const waitingRoomProviderText = evaluateGoalCompletion(
+    joinGoal,
+    ["You are in the waiting room. Dr. Elena Carter has not joined yet."],
+    intermediatePlan,
+  );
+  assert.equal(waitingRoomProviderText.complete, false);
 
   const joined = evaluateGoalCompletion(
     joinGoal,
@@ -1068,6 +1074,54 @@ function runJoinSubflowContinuationRegression(): void {
   assert.equal(echeckinNext?.action.type, "scroll");
   assert.notEqual(echeckinNext?.action.targetId, "nav-upcoming-btn");
 
+  const detailsRequest: PlanActionRequest = {
+    sessionId: "join-subflow-details-regression",
+    userGoal: joinGoal,
+    pageUrl: "http://127.0.0.1:4173/?seed=3",
+    pageTitle: "SilverVisit Appointment Details",
+    visibleText: ["Appointment Details", "Continue to Waiting Room", "Start eCheck-In", "Upcoming"],
+    elements: [
+      {
+        id: "details-enter-waiting-room-btn",
+        text: "Continue to Waiting Room",
+        role: "button",
+        x: 10,
+        y: 120,
+        width: 220,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "details-start-echeckin-btn",
+        text: "Start eCheck-In",
+        role: "button",
+        x: 10,
+        y: 60,
+        width: 180,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "nav-upcoming-btn",
+        text: "Upcoming",
+        role: "button",
+        x: 10,
+        y: 10,
+        width: 120,
+        height: 32,
+        visible: true,
+        enabled: true,
+      },
+    ],
+  };
+  const detailsNext = resolveObviousNextActionForTesting(detailsRequest, parseNavigatorIntent(joinGoal));
+  assert.ok(detailsNext, "Expected deterministic appointment-details continuation action.");
+  assert.equal(detailsNext?.action.type, "click");
+  assert.equal(detailsNext?.action.targetId, "details-enter-waiting-room-btn");
+  assert.notEqual(detailsNext?.action.targetId, "nav-upcoming-btn");
+
   const loginRequest: PlanActionRequest = {
     sessionId: "login-regression",
     userGoal: joinGoal,
@@ -1147,6 +1201,134 @@ function runJoinSubflowContinuationRegression(): void {
   assert.equal(getActiveGoal(progressed)?.status, "in_progress");
 }
 
+function runTodayAppointmentRankingRegression(): void {
+  const request: PlanActionRequest = {
+    sessionId: "today-ranking-regression",
+    userGoal: "Help me join my doctor appointment today.",
+    pageUrl: "http://127.0.0.1:4173/?seed=3",
+    pageTitle: "SilverVisit Upcoming Appointments",
+    visibleText: ["Upcoming Appointments", "Today", "Ready to Join"],
+    elements: [
+      {
+        id: "open-appointment-details-apt-today-joinable-btn",
+        text: "Open Appointment Details",
+        role: "button",
+        x: 10,
+        y: 60,
+        width: 220,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "open-appointment-details-apt-future-btn",
+        text: "Open Appointment Details",
+        role: "button",
+        x: 10,
+        y: 110,
+        width: 220,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+      {
+        id: "open-past-appointment-apt-past-btn",
+        text: "Open Summary Details",
+        role: "button",
+        x: 10,
+        y: 160,
+        width: 220,
+        height: 36,
+        visible: true,
+        enabled: true,
+      },
+    ],
+    sandboxFixture: {
+      fixtureId: "fixture-today-ranking",
+      seed: 31,
+      patientName: "Harper Lewis",
+      patientDob: "08/28/1956",
+      loginSecret: "Harper-Checkin-8820",
+      doctorName: "Dr. Naomi Patel",
+      appointmentType: "Primary Care Follow-up",
+      clinicLabel: "SilverVisit Clinic",
+      waitingRoomState: "You are in the waiting room. Dr. Naomi Patel has not joined yet.",
+      clinicianReadyState: "Dr. Naomi Patel is ready. You may join the visit now.",
+      appointmentTimeText: "Today at 3:00 PM",
+      visitTitle: "Primary Care Follow-up",
+      detailsChecklist: ["Sign in", "Complete eCheck-In", "Run device checks"],
+      portalNow: "2026-03-15T14:18:00-04:00",
+      portalState: "pre_check_in",
+      appointments: [
+        {
+          appointmentId: "apt-today-joinable",
+          scheduledDateTime: "2026-03-15T15:00:00-04:00",
+          joinWindowStart: "2026-03-15T14:45:00-04:00",
+          joinWindowEnd: "2026-03-15T15:45:00-04:00",
+          status: "ready_to_join",
+          joinableNow: true,
+          providerName: "Dr. Naomi Patel",
+          specialty: "Primary Care",
+          visitType: "Video Visit",
+          locationLabel: "SilverVisit Clinic",
+        },
+        {
+          appointmentId: "apt-future",
+          scheduledDateTime: "2026-03-20T15:00:00-04:00",
+          joinWindowStart: "2026-03-20T14:45:00-04:00",
+          joinWindowEnd: "2026-03-20T15:45:00-04:00",
+          status: "upcoming",
+          joinableNow: false,
+          providerName: "Dr. Naomi Patel",
+          specialty: "Primary Care",
+          visitType: "Video Visit",
+          locationLabel: "SilverVisit Clinic",
+        },
+        {
+          appointmentId: "apt-past",
+          scheduledDateTime: "2026-03-01T10:00:00-04:00",
+          joinWindowStart: "2026-03-01T09:45:00-04:00",
+          joinWindowEnd: "2026-03-01T10:45:00-04:00",
+          status: "past",
+          joinableNow: false,
+          providerName: "Dr. Naomi Patel",
+          specialty: "Primary Care",
+          visitType: "Video Visit",
+          locationLabel: "SilverVisit Clinic",
+        },
+      ],
+      preVisitTasks: [],
+      deviceChecks: [],
+      supportPaths: [],
+      pastVisitSummaries: [],
+      reportsResults: [],
+      notesAvs: [],
+      messageThreads: [],
+      prescriptions: [],
+      referrals: [],
+    },
+  };
+
+  const response = enforcePlannerGuardrailsForTesting(
+    {
+      status: "need_clarification",
+      message: "Model asked for clarification.",
+      action: { type: "ask_user" },
+      confidence: 0.22,
+      grounding: {
+        matchedElementIds: [],
+        matchedVisibleText: [],
+        reasoningSummary: "fallback",
+      },
+    },
+    request,
+    parseNavigatorIntent(request.userGoal),
+  );
+  assert.equal(response.status, "ok");
+  assert.equal(response.action.type, "click");
+  assert.equal(response.action.targetId, "open-appointment-details-apt-today-joinable-btn");
+}
+
 async function main(): Promise<void> {
   runGoalQueueRegression();
   console.log("[smoke] Goal queue persistence regressions passed");
@@ -1166,6 +1348,8 @@ async function main(): Promise<void> {
   console.log("[smoke] Planner guardrail regression checks passed");
   runJoinSubflowContinuationRegression();
   console.log("[smoke] Join subflow continuation/login prerequisite regressions passed");
+  runTodayAppointmentRankingRegression();
+  console.log("[smoke] Today-appointment ranking regressions passed");
   runFirestoreDiagnosticsRegression();
   console.log("[smoke] Firestore diagnostics semantics regressions passed");
 
