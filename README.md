@@ -149,7 +149,8 @@ Recommended path: **PowerShell deploy script** `backend/scripts/deploy-cloud-run
 - **Vertex Gemini Planner**: screenshot-grounded planning via `@google/genai` in Vertex mode.
 - **Gemini Live Path**: websocket route for live start/ready and multimodal runtime events.
 - **Firestore Persistence**: deterministic fixtures + run/session/action/live evidence.
-- **Diagram source:** `docs/architecture.mmd`
+- **Diagram:** <img width="1778" height="1086" alt="VLPDR-Cs4BqBq7yOf9TT9B6n7za2EHJh99iqm0OruYGzr3dG4YqJeKcLf9mi5ltlVKDHifGKlTYcD1zlthmP-giFmeLcg_CigA0bBPJUIVUWl0eqkwPZchbYeu8iGkCaNIXHER7DippJSXqeM7AgsWGgbOE9iYRF_9CojO0LhKJnL3dRcFBSQklecGCD3Vn6bFPPcOhMGllHgy9kQska" src="https://github.com/user-attachments/assets/7042f8c3-4d49-4420-9be7-736b97af0856" />
+
 
 ## How It Works
 1. User types or speaks a telehealth goal in the sidepanel.
