@@ -6,83 +6,52 @@ const DEFAULT_MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 0;
 const DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS = 65_000;
 const DEFAULT_HTTP_HEADERS_TIMEOUT_MS = 70_000;
+const DEFAULT_SUPABASE_URL = "https://veeivhmjobehdjwnrzec.supabase.co";
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_76d2J8l7fBJAQSTeZYuCCg_02nvJtOG";
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
-  if (value === undefined) {
-    return defaultValue;
-  }
+  if (value === undefined) return defaultValue;
   const lowered = value.trim().toLowerCase();
-  if (lowered === "true") {
-    return true;
-  }
-  if (lowered === "false") {
-    return false;
-  }
+  if (lowered === "true") return true;
+  if (lowered === "false") return false;
   return defaultValue;
 }
 
 function parsePort(value: string | undefined): number {
-  if (!value) {
-    return 8080;
-  }
+  if (!value) return 8080;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    return 8080;
-  }
-  return parsed;
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : 8080;
 }
 
 function parseNonNegativeInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
+  if (!value) return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function parseDotEnvFile(filePath: string): Record<string, string> {
-  if (!fs.existsSync(filePath)) {
-    return {};
-  }
-
+  if (!fs.existsSync(filePath)) return {};
   const text = fs.readFileSync(filePath, "utf8");
   const out: Record<string, string> = {};
-
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
+    if (!line || line.startsWith("#")) continue;
     const eq = line.indexOf("=");
-    if (eq <= 0) {
-      continue;
-    }
+    if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
     let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
     out[key] = value;
   }
-
   return out;
 }
 
 function resolveEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
   const cwdEnv = parseDotEnvFile(path.resolve(process.cwd(), ".env"));
   const backendEnv = parseDotEnvFile(path.resolve(process.cwd(), "backend", ".env"));
-
-  return {
-    ...cwdEnv,
-    ...backendEnv,
-    ...env,
-  };
+  return { ...cwdEnv, ...backendEnv, ...env };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -90,23 +59,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const aiProviderRaw = (resolvedEnv.AI_PROVIDER ?? "gemini_api").trim().toLowerCase();
   const aiProvider: AppConfig["aiProvider"] = aiProviderRaw === "vertex" ? "vertex" : "gemini_api";
   const useVertexAI = aiProvider === "vertex";
-  const googleCloudProject = (resolvedEnv.GOOGLE_CLOUD_PROJECT ?? "").trim();
-  const googleCloudLocation = (resolvedEnv.GOOGLE_CLOUD_LOCATION ?? "global").trim() || "global";
   const persistenceProviderRaw = (resolvedEnv.PERSISTENCE_PROVIDER ?? "supabase").trim().toLowerCase();
-  const persistenceProvider: AppConfig["persistenceProvider"] =
-    persistenceProviderRaw === "firestore" ? "firestore" : "supabase";
-  const httpRequestTimeoutMs = parseNonNegativeInt(
-    resolvedEnv.HTTP_REQUEST_TIMEOUT_MS,
-    DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
-  );
-  const httpKeepAliveTimeoutMs = parseNonNegativeInt(
-    resolvedEnv.HTTP_KEEPALIVE_TIMEOUT_MS,
-    DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS,
-  );
-  const configuredHeadersTimeoutMs = parseNonNegativeInt(
-    resolvedEnv.HTTP_HEADERS_TIMEOUT_MS,
-    DEFAULT_HTTP_HEADERS_TIMEOUT_MS,
-  );
+  const persistenceProvider: AppConfig["persistenceProvider"] = persistenceProviderRaw === "firestore" ? "firestore" : "supabase";
+  const httpRequestTimeoutMs = parseNonNegativeInt(resolvedEnv.HTTP_REQUEST_TIMEOUT_MS, DEFAULT_HTTP_REQUEST_TIMEOUT_MS);
+  const httpKeepAliveTimeoutMs = parseNonNegativeInt(resolvedEnv.HTTP_KEEPALIVE_TIMEOUT_MS, DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS);
+  const configuredHeadersTimeoutMs = parseNonNegativeInt(resolvedEnv.HTTP_HEADERS_TIMEOUT_MS, DEFAULT_HTTP_HEADERS_TIMEOUT_MS);
   const httpHeadersTimeoutMs = Math.max(configuredHeadersTimeoutMs, httpKeepAliveTimeoutMs + 1_000);
 
   return {
@@ -114,17 +71,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     aiProvider,
     geminiApiKey: (resolvedEnv.GEMINI_API_KEY ?? "").trim(),
     useVertexAI,
-    googleCloudProject,
-    googleCloudLocation,
+    googleCloudProject: (resolvedEnv.GOOGLE_CLOUD_PROJECT ?? "").trim(),
+    googleCloudLocation: (resolvedEnv.GOOGLE_CLOUD_LOCATION ?? "global").trim() || "global",
     geminiActionModel: (resolvedEnv.GEMINI_ACTION_MODEL ?? "gemini-2.5-flash").trim() || "gemini-2.5-flash",
-    geminiLiveModel:
-      (resolvedEnv.GEMINI_LIVE_MODEL ?? "gemini-live-2.5-flash-native-audio").trim() ||
-      "gemini-live-2.5-flash-native-audio",
+    geminiLiveModel: (resolvedEnv.GEMINI_LIVE_MODEL ?? "gemini-live-2.5-flash-native-audio").trim() || "gemini-live-2.5-flash-native-audio",
     enableLiveApi: parseBool(resolvedEnv.ENABLE_LIVE_API, false),
     persistenceProvider,
-    supabaseUrl: (resolvedEnv.SUPABASE_URL ?? "").trim(),
+    supabaseUrl: (resolvedEnv.SUPABASE_URL ?? DEFAULT_SUPABASE_URL).trim(),
     supabaseServiceRoleKey: (resolvedEnv.SUPABASE_SERVICE_ROLE_KEY ?? "").trim(),
-    supabasePublishableKey: (resolvedEnv.SUPABASE_PUBLISHABLE_KEY ?? "").trim(),
+    supabasePublishableKey: (resolvedEnv.SUPABASE_PUBLISHABLE_KEY ?? DEFAULT_SUPABASE_PUBLISHABLE_KEY).trim(),
     enableFirestore: persistenceProvider === "firestore" && parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
     firestoreCollectionPrefix: (resolvedEnv.FIRESTORE_COLLECTION_PREFIX ?? "silvervisit").trim() || "silvervisit",
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
