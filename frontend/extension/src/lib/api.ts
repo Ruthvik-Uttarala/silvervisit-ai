@@ -8,11 +8,15 @@ import type {
   SessionStartResponse,
 } from "./types";
 
-const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
-
 export function getBackendBaseUrl() {
   const configured = import.meta.env.VITE_BACKEND_BASE_URL?.trim();
-  return configured && configured.length > 0 ? configured : DEFAULT_BACKEND_BASE_URL;
+  if (configured && configured.length > 0) {
+    return configured.replace(/\/+$/, "");
+  }
+  if (import.meta.env.DEV) {
+    return "http://localhost:8080";
+  }
+  throw new Error("Production backend URL is not configured.");
 }
 
 export function getBackendWsUrl() {

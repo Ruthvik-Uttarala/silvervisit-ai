@@ -1,9 +1,36 @@
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "./types";
-import { isVertexConfigured } from "./config";
+import { isGeminiApiConfigured, isVertexConfigured } from "./config";
 
-let cachedClient: GoogleGenAI | null = null;
-let cachedKey = "";
+let cachedVertexClient: GoogleGenAI | null = null;
+let cachedVertexKey = "";
+let cachedGeminiApiClient: GoogleGenAI | null = null;
+let cachedGeminiApiKeyFingerprint = "";
+
+function fingerprintSecret(value: string): string {
+  return `${value.length}:${value.slice(0, 4)}`;
+}
+
+export function getGeminiClient(config: AppConfig): GoogleGenAI {
+  if (config.aiProvider === "vertex") {
+    return getVertexClient(config);
+  }
+
+  if (!isGeminiApiConfigured(config)) {
+    throw new Error("Gemini Developer API is not configured. Set GEMINI_API_KEY server-side.");
+  }
+
+  const key = fingerprintSecret(config.geminiApiKey);
+  if (cachedGeminiApiClient && cachedGeminiApiKeyFingerprint === key) {
+    return cachedGeminiApiClient;
+  }
+
+  cachedGeminiApiClient = new GoogleGenAI({
+    apiKey: config.geminiApiKey,
+  });
+  cachedGeminiApiKeyFingerprint = key;
+  return cachedGeminiApiClient;
+}
 
 export function getVertexClient(config: AppConfig): GoogleGenAI {
   if (!isVertexConfigured(config)) {
@@ -13,15 +40,15 @@ export function getVertexClient(config: AppConfig): GoogleGenAI {
   }
 
   const key = `${config.googleCloudProject}:${config.googleCloudLocation}`;
-  if (cachedClient && cachedKey === key) {
-    return cachedClient;
+  if (cachedVertexClient && cachedVertexKey === key) {
+    return cachedVertexClient;
   }
 
-  cachedClient = new GoogleGenAI({
+  cachedVertexClient = new GoogleGenAI({
     vertexai: true,
     project: config.googleCloudProject,
     location: config.googleCloudLocation,
   });
-  cachedKey = key;
-  return cachedClient;
+  cachedVertexKey = key;
+  return cachedVertexClient;
 }

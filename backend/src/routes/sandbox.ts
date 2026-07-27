@@ -1,5 +1,5 @@
 import { ServerResponse } from "node:http";
-import { FirestoreRepository } from "../firestore";
+import { AppRepository } from "../repository";
 import { Logger } from "../logger";
 import { SandboxRunEventRequest, SandboxRunStartRequest } from "../types";
 import { isObject, safeString, sendJson } from "../utils";
@@ -55,7 +55,7 @@ function parseRunEventRequest(body: unknown): SandboxRunEventRequest | null {
 export async function handleSandboxFixture(
   res: ServerResponse,
   requestId: string,
-  repository: FirestoreRepository,
+  repository: AppRepository,
   seedInput?: number,
 ): Promise<void> {
   const resolved = await repository.getFixtureBySeed(seedInput);
@@ -74,7 +74,7 @@ export async function handleSandboxRunStart(
   res: ServerResponse,
   body: unknown,
   requestId: string,
-  repository: FirestoreRepository,
+  repository: AppRepository,
   logger: Logger,
 ): Promise<void> {
   const request = parseRunStartRequest(body);
@@ -92,7 +92,7 @@ export async function handleSandboxRunEvent(
   res: ServerResponse,
   body: unknown,
   requestId: string,
-  repository: FirestoreRepository,
+  repository: AppRepository,
 ): Promise<void> {
   const request = parseRunEventRequest(body);
   if (!request) {

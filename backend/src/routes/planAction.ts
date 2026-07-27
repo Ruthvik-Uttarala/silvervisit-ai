@@ -1,7 +1,7 @@
 import { ServerResponse } from "node:http";
 import { planNextAction } from "../actionPlanner";
 import { AppConfig, PlanActionResponse } from "../types";
-import { FirestoreRepository } from "../firestore";
+import { AppRepository } from "../repository";
 import { Logger } from "../logger";
 import { SessionStore } from "../sessions";
 import { nowIso, sendJson } from "../utils";
@@ -33,7 +33,7 @@ export async function handlePlanAction(
   sessions: SessionStore,
   config: AppConfig,
   log: Logger,
-  firestore: FirestoreRepository,
+  repository: AppRepository,
 ): Promise<void> {
   const validation = validatePlanActionRequest(body);
 
@@ -64,7 +64,7 @@ export async function handlePlanAction(
     type: "plan_response",
     summary: `${response.status}:${response.action.type}`,
   });
-  void firestore
+  void repository
     .recordActionLog(session.sessionId, {
       requestId,
       userGoal: request.userGoal,
@@ -76,13 +76,13 @@ export async function handlePlanAction(
       grounding: response.grounding,
     })
     .catch((error: unknown) => {
-      log.warn("Failed to persist action log to Firestore", {
+      log.warn("Failed to persist action log", {
         requestId,
         sessionId: session.sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     });
-  void firestore
+  void repository
     .upsertNavigatorSession(session.sessionId, session.userGoal, {
       latestPlanStatus: response.status,
       latestActionType: response.action.type,

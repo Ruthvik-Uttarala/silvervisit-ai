@@ -508,12 +508,17 @@ function runFirestoreDiagnosticsRegression(): void {
 }
 
 function runSupportedPageHelperRegression(): void {
+  process.env.DEV = "true";
   assert.equal(isSupportedTelehealthUrl("http://127.0.0.1:4173/?seed=4"), true);
   assert.equal(isSupportedTelehealthUrl("http://localhost:4173/?seed=4"), true);
+  process.env.DEV = "false";
+  process.env.VITE_SUPPORTED_PORTAL_ORIGINS = "https://silvervisit-ai.vercel.app";
+  assert.equal(isSupportedTelehealthUrl("https://silvervisit-ai.vercel.app/?seed=4"), true);
+  assert.equal(isSupportedTelehealthUrl("https://evil-silvervisit.example.com/?seed=4"), false);
   assert.equal(isSupportedTelehealthUrl("https://discord.com/channels"), false);
   const reason = buildUnsupportedPageReason("https://discord.com/channels");
   assert.ok(reason.includes("https://discord.com/channels"));
-  assert.ok(reason.toLowerCase().includes("return to the silvervisit telehealth app"));
+  assert.ok(reason.toLowerCase().includes("return to https://silvervisit-ai.vercel.app"));
 }
 
 function runRuntimeGenerationRegression(): void {
@@ -1363,9 +1368,12 @@ async function main(): Promise<void> {
     const health = await healthRes.json();
     assert.equal(health.ok, true);
     assert.equal(health.service, "silvervisit-backend");
+    assert.equal(health.aiProvider, "gemini_api");
+    assert.equal(typeof health.geminiConfigured, "boolean");
+    assert.equal(health.geminiModel, "gemini-2.5-flash");
     assert.equal(typeof health.liveApiConfigured, "boolean");
-    assert.equal(typeof health.vertexConfigured, "boolean");
-    assert.equal(typeof health.useVertexAI, "boolean");
+    assert.equal(health.vertexConfigured, false);
+    assert.equal(health.useVertexAI, false);
     assert.equal(typeof health.liveEnabled, "boolean");
     assert.equal(typeof health.plannerModel, "string");
     assert.equal(typeof health.liveModel, "string");
@@ -1374,6 +1382,8 @@ async function main(): Promise<void> {
     assert.equal(typeof health.httpRequestTimeoutMs, "number");
     assert.equal(typeof health.httpHeadersTimeoutMs, "number");
     assert.equal(typeof health.httpKeepAliveTimeoutMs, "number");
+    assert.equal(typeof health.databaseProvider, "string");
+    assert.equal(typeof health.supabaseConfigured, "boolean");
     assert.equal(typeof health.firestoreConfigured, "boolean");
     assert.equal(typeof health.firestoreMode, "string");
     assert.equal(typeof health.firestoreRuntimeReady, "boolean");
@@ -1451,6 +1461,12 @@ async function main(): Promise<void> {
     const sessionGet = await sessionGetRes.json();
     assert.equal(sessionGet.sessionId, session.sessionId);
     console.log("[smoke] GET /api/session/:id passed");
+
+    if (!health.geminiConfigured) {
+      console.log("[smoke] Gemini real-call route checks skipped because GEMINI_API_KEY is not configured locally.");
+      console.log("[smoke] All smoke checks passed.");
+      return;
+    }
 
     const loginPlannerPayload = {
       sessionId: session.sessionId,

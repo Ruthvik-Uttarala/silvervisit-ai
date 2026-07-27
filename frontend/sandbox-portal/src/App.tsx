@@ -177,14 +177,19 @@ interface SandboxRunStartResponse {
   fixture: SandboxFixtureContext;
 }
 
-const DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_SEED = 1;
 const FIXTURE_SEED_QUERY_PARAM = "seed";
 const FIXTURE_SEED_STORAGE_KEY = "silvervisit:sandbox-seed";
 
 function getBackendBaseUrl(): string {
   const configured = import.meta.env.VITE_BACKEND_BASE_URL?.trim();
-  return configured || DEFAULT_BACKEND_BASE_URL;
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+  if (import.meta.env.DEV) {
+    return "http://127.0.0.1:8080";
+  }
+  throw new Error("Production backend URL is not configured.");
 }
 
 function normalizeSeed(raw: string | null): number | null {

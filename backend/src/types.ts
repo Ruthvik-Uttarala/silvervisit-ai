@@ -91,12 +91,17 @@ export type ValidationResult<T> = ValidationSuccess<T> | ValidationFailure;
 
 export interface AppConfig {
   port: number;
+  aiProvider: "gemini_api" | "vertex";
+  geminiApiKey: string;
   useVertexAI: boolean;
   googleCloudProject: string;
   googleCloudLocation: string;
   geminiActionModel: string;
   geminiLiveModel: string;
   enableLiveApi: boolean;
+  persistenceProvider: "supabase" | "firestore";
+  supabaseUrl: string;
+  supabaseServiceRoleKey: string;
   enableFirestore: boolean;
   firestoreCollectionPrefix: string;
   maxRequestBytes: number;

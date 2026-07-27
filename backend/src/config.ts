@@ -87,9 +87,14 @@ function resolveEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> 
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const resolvedEnv = resolveEnv(env);
-  const useVertexAI = parseBool(resolvedEnv.GOOGLE_GENAI_USE_VERTEXAI, true);
+  const aiProviderRaw = (resolvedEnv.AI_PROVIDER ?? "gemini_api").trim().toLowerCase();
+  const aiProvider: AppConfig["aiProvider"] = aiProviderRaw === "vertex" ? "vertex" : "gemini_api";
+  const useVertexAI = aiProvider === "vertex";
   const googleCloudProject = (resolvedEnv.GOOGLE_CLOUD_PROJECT ?? "").trim();
   const googleCloudLocation = (resolvedEnv.GOOGLE_CLOUD_LOCATION ?? "global").trim() || "global";
+  const persistenceProviderRaw = (resolvedEnv.PERSISTENCE_PROVIDER ?? "supabase").trim().toLowerCase();
+  const persistenceProvider: AppConfig["persistenceProvider"] =
+    persistenceProviderRaw === "firestore" ? "firestore" : "supabase";
   const httpRequestTimeoutMs = parseNonNegativeInt(
     resolvedEnv.HTTP_REQUEST_TIMEOUT_MS,
     DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
@@ -106,6 +111,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   return {
     port: parsePort(resolvedEnv.PORT),
+    aiProvider,
+    geminiApiKey: (resolvedEnv.GEMINI_API_KEY ?? "").trim(),
     useVertexAI,
     googleCloudProject,
     googleCloudLocation,
@@ -114,7 +121,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       (resolvedEnv.GEMINI_LIVE_MODEL ?? "gemini-live-2.5-flash-native-audio").trim() ||
       "gemini-live-2.5-flash-native-audio",
     enableLiveApi: parseBool(resolvedEnv.ENABLE_LIVE_API, false),
-    enableFirestore: parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
+    persistenceProvider,
+    supabaseUrl: (resolvedEnv.SUPABASE_URL ?? "").trim(),
+    supabaseServiceRoleKey: (resolvedEnv.SUPABASE_SERVICE_ROLE_KEY ?? "").trim(),
+    enableFirestore: persistenceProvider === "firestore" && parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
     firestoreCollectionPrefix: (resolvedEnv.FIRESTORE_COLLECTION_PREFIX ?? "silvervisit").trim() || "silvervisit",
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
     httpRequestTimeoutMs,
@@ -129,4 +139,8 @@ export function isVertexConfigured(config: AppConfig): boolean {
 
 export function isLiveApiConfigured(config: AppConfig): boolean {
   return config.enableLiveApi && isVertexConfigured(config);
+}
+
+export function isGeminiApiConfigured(config: AppConfig): boolean {
+  return config.aiProvider === "gemini_api" && config.geminiApiKey.length > 0;
 }

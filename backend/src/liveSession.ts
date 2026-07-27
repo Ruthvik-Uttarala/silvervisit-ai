@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { IncomingMessage } from "node:http";
 import WebSocket from "ws";
 import { isVertexConfigured } from "./config";
-import { FirestoreRepository } from "./firestore";
+import { AppRepository } from "./repository";
 import { Logger } from "./logger";
 import { SessionStore } from "./sessions";
 import { AppConfig, LiveClientMessage, LiveServerMessage, WsErrorMessage } from "./types";
@@ -14,7 +14,7 @@ interface LiveConnectionContext {
   config: AppConfig;
   logger: Logger;
   sessions: SessionStore;
-  firestore: FirestoreRepository;
+  firestore: AppRepository;
   requestId: string;
 }
 

@@ -1,5 +1,24 @@
 const SUPPORTED_LOCAL_PORT = "4173";
 
+function getEnv(): Record<string, string | boolean | undefined> {
+  const viteEnv = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env;
+  if (viteEnv) {
+    return viteEnv;
+  }
+  return typeof process === "undefined" ? {} : process.env;
+}
+
+function configuredProductionOrigins(): Set<string> {
+  const rawValue = getEnv().VITE_SUPPORTED_PORTAL_ORIGINS;
+  const raw = typeof rawValue === "string" ? rawValue.trim() : "";
+  return new Set(
+    raw
+      .split(",")
+      .map((item: string) => item.trim().replace(/\/+$/, ""))
+      .filter((item: string) => item.length > 0),
+  );
+}
+
 export function isSupportedTelehealthUrl(url?: string): boolean {
   if (!url) {
     return false;
@@ -9,11 +28,12 @@ export function isSupportedTelehealthUrl(url?: string): boolean {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    const host = parsed.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1") {
+    const origin = parsed.origin.replace(/\/+$/, "");
+    const devMode = getEnv().DEV === true || getEnv().DEV === "true";
+    if (devMode && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")) {
       return parsed.port === SUPPORTED_LOCAL_PORT;
     }
-    return host.includes("silvervisit");
+    return configuredProductionOrigins().has(origin);
   } catch {
     return false;
   }
@@ -25,5 +45,7 @@ export function getSupportedSandboxPort(): string {
 
 export function buildUnsupportedPageReason(url?: string): string {
   const shownUrl = url?.trim() || "unknown URL";
-  return `You're currently on a non-telehealth page (${shownUrl}). Please return to the SilverVisit telehealth app tab on port ${SUPPORTED_LOCAL_PORT} so I can continue helping safely.`;
+  const configured = [...configuredProductionOrigins()];
+  const target = configured[0] ?? `the configured SilverVisit portal`;
+  return `You're currently on an unsupported page (${shownUrl}). Please return to ${target} so I can continue safely.`;
 }

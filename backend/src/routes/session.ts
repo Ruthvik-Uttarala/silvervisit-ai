@@ -1,5 +1,5 @@
 import { ServerResponse } from "node:http";
-import { FirestoreRepository } from "../firestore";
+import { AppRepository } from "../repository";
 import { SessionStore } from "../sessions";
 import { Logger } from "../logger";
 import { sendJson } from "../utils";
@@ -11,7 +11,7 @@ export function handleSessionStart(
   requestId: string,
   sessions: SessionStore,
   log: Logger,
-  firestore: FirestoreRepository,
+  repository: AppRepository,
 ): void {
   const validation = validateSessionStartRequest(body);
   if (!validation.ok) {
@@ -31,8 +31,8 @@ export function handleSessionStart(
     requestId,
     sessionId: session.sessionId,
   });
-  void firestore.upsertNavigatorSession(session.sessionId, session.userGoal).catch((error: unknown) => {
-    log.warn("Failed to persist navigator session to Firestore", {
+  void repository.upsertNavigatorSession(session.sessionId, session.userGoal).catch((error: unknown) => {
+    log.warn("Failed to persist navigator session", {
       requestId,
       sessionId: session.sessionId,
       error: error instanceof Error ? error.message : String(error),
@@ -55,16 +55,16 @@ export async function handleSessionGet(
   requestId: string,
   sessionId: string,
   sessions: SessionStore,
-  firestore: FirestoreRepository,
+  repository: AppRepository,
 ): Promise<void> {
   const memoryRecord = sessions.get(sessionId);
-  let firestoreRecord: Record<string, unknown> | null = null;
+  let persistedRecord: Record<string, unknown> | null = null;
   try {
-    firestoreRecord = await firestore.getNavigatorSession(sessionId);
+    persistedRecord = await repository.getNavigatorSession(sessionId);
   } catch {
-    firestoreRecord = null;
+    persistedRecord = null;
   }
-  if (!memoryRecord && !firestoreRecord) {
+  if (!memoryRecord && !persistedRecord) {
     sendJson(res, 404, { error: "Session not found." }, requestId);
     return;
   }
@@ -74,7 +74,7 @@ export async function handleSessionGet(
     {
       sessionId,
       memoryRecord: memoryRecord ?? null,
-      firestoreRecord,
+      persistedRecord,
     },
     requestId,
   );

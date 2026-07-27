@@ -588,6 +588,17 @@ const DEFAULT_FIXTURES: RawFixtureData[] = [
   }),
 ];
 
+export function getDeterministicFixtureRecords(): Array<{ seed: number; fixture: SandboxFixtureContext }> {
+  return DEFAULT_FIXTURES.map((fixture, index) => ({
+    seed: index + 1,
+    fixture: {
+      fixtureId: `fixture-${index + 1}`,
+      seed: index + 1,
+      ...normalizeFixture(fixture),
+    },
+  }));
+}
+
 interface FirestoreDiagnostics {
   configured: boolean;
   mode: FirestoreMode;

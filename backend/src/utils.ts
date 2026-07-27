@@ -12,8 +12,30 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function setCorsHeaders(res: ServerResponse): void {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function getAllowedOrigins(): Set<string> {
+  return new Set(
+    (process.env.ALLOWED_ORIGINS ?? "")
+      .split(",")
+      .map((item) => item.trim().replace(/\/+$/, ""))
+      .filter((item) => item.length > 0),
+  );
+}
+
+function isAllowedOrigin(origin: string): boolean {
+  if (origin.startsWith("chrome-extension://")) {
+    return true;
+  }
+  if (process.env.NODE_ENV !== "production" && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+    return true;
+  }
+  return getAllowedOrigins().has(origin.replace(/\/+$/, ""));
+}
+
+export function setCorsHeaders(res: ServerResponse, origin?: string): void {
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-Request-Id");
   res.setHeader("Access-Control-Max-Age", "86400");

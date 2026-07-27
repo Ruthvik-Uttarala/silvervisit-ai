@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "smoke": "tsx scripts/smoke-test.ts",
+    "test:repository": "tsx scripts/repository-contract-test.ts",
     "seed:firestore": "tsx scripts/seed-firestore.ts",
     "verify:cloud-run": "tsx scripts/verify-cloud-run.ts",
     "secret:hygiene": "tsx scripts/check-secret-hygiene.ts"

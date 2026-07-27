@@ -2,7 +2,7 @@ import http, { IncomingMessage, Server, ServerResponse } from "node:http";
 import { URL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { loadConfig } from "./config";
-import { getFirestoreRepository } from "./firestore";
+import { getRepository } from "./repository";
 import { handleLiveSocketConnection } from "./liveSession";
 import { logger } from "./logger";
 import { handleHealth } from "./routes/health";
@@ -22,12 +22,14 @@ import {
 
 function logGoogleRuntimeConfiguration(): void {
   const config = loadConfig();
-  const firestore = getFirestoreRepository(config);
-  const firestoreDiagnostics = firestore.getDiagnostics();
-  logger.info("Google runtime configuration", {
+  const repository = getRepository(config);
+  const diagnostics = repository.getDiagnostics();
+  logger.info("Runtime configuration", {
     provider: "@google/genai",
-    vertexModeEnabled: config.useVertexAI,
-    vertexConfigured: config.useVertexAI && config.googleCloudProject.length > 0 && config.googleCloudLocation.length > 0,
+    aiProvider: config.aiProvider,
+    geminiApiConfigured: config.geminiApiKey.length > 0,
+    vertexModeEnabled: config.aiProvider === "vertex",
+    vertexConfigured: config.aiProvider === "vertex" && config.googleCloudProject.length > 0 && config.googleCloudLocation.length > 0,
     liveEnabled: config.enableLiveApi,
     plannerModel: config.geminiActionModel,
     liveModel: config.geminiLiveModel,
@@ -36,8 +38,9 @@ function logGoogleRuntimeConfiguration(): void {
     httpRequestTimeoutMs: config.httpRequestTimeoutMs,
     httpHeadersTimeoutMs: config.httpHeadersTimeoutMs,
     httpKeepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
-    firestoreConfigured: firestoreDiagnostics.configured,
-    firestoreMode: firestoreDiagnostics.mode,
+    databaseProvider: diagnostics.provider,
+    persistenceConfigured: diagnostics.configured,
+    persistenceMode: diagnostics.mode,
   });
 }
 
@@ -47,13 +50,14 @@ export interface RunningServer {
   close: () => Promise<void>;
 }
 
-async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = loadConfig();
-  const firestore = getFirestoreRepository(config);
+  const repository = getRepository(config);
   const requestIdHeader = req.headers["x-request-id"];
   const requestId = typeof requestIdHeader === "string" && requestIdHeader.trim() ? requestIdHeader : generateRequestId();
 
-  setCorsHeaders(res);
+  const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+  setCorsHeaders(res, origin);
 
   const method = req.method ?? "GET";
   const parsedUrl = new URL(req.url ?? "/", "http://localhost");
@@ -95,7 +99,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
 
     if (method === "POST" && pathname === "/api/session/start") {
       const body = await readJsonBody(req, config.maxRequestBytes);
-      handleSessionStart(res, body, requestId, sessionStore, logger, firestore);
+      handleSessionStart(res, body, requestId, sessionStore, logger, repository);
       return;
     }
 
@@ -105,35 +109,35 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
         sendJson(res, 400, { error: "sessionId is required." }, requestId);
         return;
       }
-      await handleSessionGet(res, requestId, sessionId, sessionStore, firestore);
+      await handleSessionGet(res, requestId, sessionId, sessionStore, repository);
       return;
     }
 
     if (method === "GET" && pathname === "/api/sandbox/fixture") {
       const seedQuery = parsedUrl.searchParams.get("seed");
       const seed = seedQuery ? Number(seedQuery) : undefined;
-      await handleSandboxFixture(res, requestId, firestore, seed);
+      await handleSandboxFixture(res, requestId, repository, seed);
       return;
     }
 
     if (method === "POST" && pathname === "/api/sandbox/run/start") {
       assertJsonContentType(req);
       const body = await readJsonBody(req, config.maxRequestBytes);
-      await handleSandboxRunStart(res, body, requestId, firestore, logger);
+      await handleSandboxRunStart(res, body, requestId, repository, logger);
       return;
     }
 
     if (method === "POST" && pathname === "/api/sandbox/run/event") {
       assertJsonContentType(req);
       const body = await readJsonBody(req, config.maxRequestBytes);
-      await handleSandboxRunEvent(res, body, requestId, firestore);
+      await handleSandboxRunEvent(res, body, requestId, repository);
       return;
     }
 
     if (method === "POST" && pathname === "/api/plan-action") {
       assertJsonContentType(req);
       const body = await readJsonBody(req, config.maxRequestBytes);
-      await handlePlanAction(res, body, requestId, sessionStore, config, logger, firestore);
+      await handlePlanAction(res, body, requestId, sessionStore, config, logger, repository);
       return;
     }
 
@@ -205,12 +209,12 @@ export function createAppServer(): { server: Server; wss: WebSocketServer } {
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage, requestId: string) => {
     const config = loadConfig();
-    const firestore = getFirestoreRepository(config);
+    const repository = getRepository(config);
     handleLiveSocketConnection(ws, req, {
       config,
       logger,
       sessions: sessionStore,
-      firestore,
+      firestore: repository,
       requestId,
     });
   });
@@ -222,19 +226,21 @@ export async function startServer(port = loadConfig().port): Promise<RunningServ
   logGoogleRuntimeConfiguration();
   sessionStore.startCleanup();
   const config = loadConfig();
-  const firestore = getFirestoreRepository(config);
-  const firestoreDiagnostics = firestore.getDiagnostics();
-  if (firestoreDiagnostics.configured) {
+  const repository = getRepository(config);
+  const diagnostics = repository.getDiagnostics();
+  if (diagnostics.configured) {
     try {
-      const seededCount = await firestore.ensureDeterministicFixtures();
-      logger.info("Firestore fixture bootstrap complete", {
-        firestoreMode: firestoreDiagnostics.mode,
+      const seededCount = await repository.ensureDeterministicFixtures();
+      logger.info("Repository fixture bootstrap complete", {
+        databaseProvider: diagnostics.provider,
+        persistenceMode: diagnostics.mode,
         seededCount,
       });
     } catch (error) {
-      firestore.markUnavailable(error);
-      logger.error("Firestore bootstrap failed; runtime marked unavailable", {
-        firestoreMode: firestoreDiagnostics.mode,
+      repository.markUnavailable(error);
+      logger.error("Repository bootstrap failed; runtime marked unavailable", {
+        databaseProvider: diagnostics.provider,
+        persistenceMode: diagnostics.mode,
         error: safeErrorMessage(error),
       });
     }

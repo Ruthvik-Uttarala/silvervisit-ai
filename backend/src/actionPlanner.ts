@@ -13,14 +13,14 @@ import {
   UIElement,
 } from "./types";
 import { Logger } from "./logger";
-import { getVertexClient } from "./vertex";
+import { getGeminiClient } from "./vertex";
 import { parseNavigatorIntent } from "./intentParser";
 import { clampConfidence, getActionFallback, sanitizeBase64, safeErrorMessage, safeString } from "./utils";
 
 const ACTION_TYPES_SET = new Set<string>(ACTION_TYPES);
 const DIRECTION_SET = new Set<string>(ACTION_DIRECTIONS);
 const AMOUNT_SET = new Set<string>(ACTION_AMOUNTS);
-const REQUIRED_TARGET_TYPES = new Set(["click", "type", "highlight"]);
+const REQUIRED_TARGET_TYPES = new Set(["click", "type"]);
 const PRECISE_DESTINATIONS = new Set<NavigatorDestination>([
   "appointments",
   "reports_results",
@@ -45,7 +45,7 @@ const ACTION_RESPONSE_SCHEMA = {
       properties: {
         type: {
           type: "string",
-          enum: ["highlight", "click", "type", "scroll", "wait", "ask_user", "done"],
+          enum: ["click", "type", "scroll", "ask_user", "done"],
         },
         targetId: { type: "string" },
         value: { type: "string" },
@@ -163,6 +163,69 @@ function extractModelText(response: any): string {
   }
 
   return "";
+}
+
+function validateRawModelOutput(raw: Record<string, unknown>, request: PlanActionRequest): string | null {
+  const status = safeString(raw.status);
+  if (!["ok", "need_clarification", "error"].includes(status)) {
+    return "Model response had an invalid status.";
+  }
+  if (typeof raw.message !== "string" || raw.message.trim().length === 0) {
+    return "Model response was missing a message.";
+  }
+  const action = (raw.action ?? {}) as Record<string, unknown>;
+  const actionType = safeString(action.type);
+  if (!["click", "type", "scroll", "ask_user", "done"].includes(actionType)) {
+    return "Model response had an invalid action type.";
+  }
+  const confidence = Number(raw.confidence);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    return "Model response confidence was outside 0 to 1.";
+  }
+  const elementMap = new Map(request.elements.map((element) => [element.id, element]));
+  const targetId = safeString(action.targetId);
+  if ((actionType === "click" || actionType === "type") && !targetId) {
+    return "Model response omitted the required targetId.";
+  }
+  if (targetId) {
+    const target = elementMap.get(targetId);
+    if (!target) {
+      return "Model response targeted an element that was not captured from the page.";
+    }
+    if ((actionType === "click" || actionType === "type") && !isInteractableElement(target)) {
+      return "Model response targeted a hidden or disabled element.";
+    }
+  }
+  if (actionType === "scroll") {
+    const direction = safeString(action.direction);
+    if (direction && !["up", "down"].includes(direction)) {
+      return "Model response used an unsupported scroll direction.";
+    }
+  }
+  const grounding = (raw.grounding ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(grounding.matchedElementIds) || !Array.isArray(grounding.matchedVisibleText)) {
+    return "Model response had invalid grounding fields.";
+  }
+  const medicalAdviceText = [raw.message, grounding.reasoningSummary]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  if (/\b(diagnos(?:e|is)|treat(?:ment)? advice|increase your dose|stop taking|start taking|prescribe)\b/.test(medicalAdviceText)) {
+    return "Model response contained medical diagnosis or treatment advice.";
+  }
+  const pageUrl = request.pageUrl ?? "";
+  if (/\b(open|navigate|go)\b/i.test(String(raw.message)) && !/silvervisit|localhost|127\.0\.0\.1|vercel\.app/i.test(pageUrl)) {
+    return "Model response attempted navigation outside the supported portal.";
+  }
+  return null;
+}
+
+function isNonRetryableGeminiError(errorMessage: string): boolean {
+  return /api key|permission|unauthenticated|unauthorized|forbidden|quota|billing|schema|invalid/i.test(errorMessage);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeAction(raw: Record<string, unknown>): ActionObject {
@@ -1548,17 +1611,12 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
     );
   }
 
-  const deterministicNext = resolveObviousNextAction(request, parsedIntent);
-  if (deterministicNext) {
-    return deterministicNext;
-  }
-
   let client: any;
   try {
-    client = getVertexClient(context.config) as any;
+    client = getGeminiClient(context.config) as any;
   } catch (error) {
     return buildAskUser(
-      "Vertex AI is not configured for action planning.",
+      "Gemini is not configured for action planning.",
       safeErrorMessage(error),
       "error",
     );
@@ -1591,58 +1649,86 @@ export async function planNextAction(request: PlanActionRequest, context: Planne
     }
   }
 
-  try {
-    context.logger.info("Invoking Gemini planner on Vertex AI", {
-      requestId: context.requestId,
-      sessionId: request.sessionId,
-      provider: "@google/genai",
-      vertexModeEnabled: context.config.useVertexAI,
-      model: context.config.geminiActionModel,
-    });
-
-    const response: any = await client.models.generateContent({
-      model: context.config.geminiActionModel,
-      contents: [
-        {
-          role: "user",
-          parts: userParts,
-        },
-      ],
-      config: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-        responseSchema: ACTION_RESPONSE_SCHEMA,
-        systemInstruction: ACTION_PLANNER_SYSTEM_PROMPT,
-      },
-    });
-
-    const text = extractModelText(response);
-    const parsed = extractJsonCandidate(text);
-    if (!parsed) {
-      context.logger.warn("Model returned unparseable response", {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      context.logger.info("Invoking Gemini planner", {
         requestId: context.requestId,
         sessionId: request.sessionId,
-        modelText: text,
+        provider: context.config.aiProvider,
+        model: context.config.geminiActionModel,
+        attempt,
       });
-      return buildAskUser(
-        "I could not confidently determine the next step from this screen.",
-        "The model response could not be parsed into the required action format.",
-      );
+
+      const response: any = await client.models.generateContent({
+        model: context.config.geminiActionModel,
+        contents: [
+          {
+            role: "user",
+            parts: userParts,
+          },
+        ],
+        config: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: ACTION_RESPONSE_SCHEMA,
+          systemInstruction: ACTION_PLANNER_SYSTEM_PROMPT,
+        },
+      });
+
+      const text = extractModelText(response);
+      const parsed = extractJsonCandidate(text);
+      if (!parsed) {
+        context.logger.warn("Model returned unparseable response", {
+          requestId: context.requestId,
+          sessionId: request.sessionId,
+        });
+        return buildAskUser(
+          "I could not confidently determine the next step from this screen.",
+          "The Gemini response could not be parsed into the required action format.",
+          "error",
+        );
+      }
+
+      const validationError = validateRawModelOutput(parsed, request);
+      if (validationError) {
+        context.logger.warn("Model response failed server-side validation", {
+          requestId: context.requestId,
+          sessionId: request.sessionId,
+          validationError,
+        });
+        return buildAskUser(
+          "I could not safely use Gemini's suggested next step.",
+          validationError,
+          "error",
+        );
+      }
+
+      return normalizeModelOutput(parsed, request, parsedIntent);
+    } catch (error) {
+      const errorMessage = safeErrorMessage(error);
+      const retryable = !isNonRetryableGeminiError(errorMessage) && attempt < maxAttempts;
+      context.logger.error("Gemini action planning failed", {
+        requestId: context.requestId,
+        sessionId: request.sessionId,
+        provider: context.config.aiProvider,
+        model: context.config.geminiActionModel,
+        attempt,
+        retryable,
+        error: errorMessage,
+      });
+
+      if (!retryable) {
+        return buildAskUser(
+          "I could not reach Gemini for this step.",
+          errorMessage,
+          "error",
+        );
+      }
+
+      await delay(250 * 2 ** (attempt - 1));
     }
-
-    return normalizeModelOutput(parsed, request, parsedIntent);
-  } catch (error) {
-    const errorMessage = safeErrorMessage(error);
-    context.logger.error("Vertex action planning failed", {
-      requestId: context.requestId,
-      sessionId: request.sessionId,
-      error: errorMessage,
-    });
-
-    return buildAskUser(
-      "I could not reach Gemini on Vertex AI for this step.",
-      errorMessage,
-      "error",
-    );
   }
+
+  return buildAskUser("I could not reach Gemini for this step.", "Gemini retries were exhausted.", "error");
 }
