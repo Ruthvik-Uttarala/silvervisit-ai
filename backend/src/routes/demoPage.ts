@@ -19,7 +19,7 @@ export function handleDemoPage(res: ServerResponse): void {
     .portal{border:1px solid #d7dfec;border-radius:16px;padding:18px;margin-top:14px;min-height:285px}.portal-title{font-size:20px;font-weight:800}.muted{color:#67758a;font-size:14px}.screen-copy{margin:12px 0 4px;line-height:1.55}
     .choice{transition:all .22s ease}.highlight{outline:4px solid #22c55e;outline-offset:3px;transform:translateY(-1px)}.executed{background:#dcfce7!important;color:#166534!important}
     .progress{height:10px;background:#e8edf5;border-radius:999px;overflow:hidden;margin-top:16px}.progress>div{height:100%;width:0;background:#2563eb;transition:width .35s ease}
-    .log{display:flex;flex-direction:column;gap:10px;margin-top:12px}.log-item{border:1px solid #dde4ef;border-radius:13px;padding:12px;background:#fafcff}.log-item strong{display:block;margin-bottom:4px}.ok{color:#166534;font-weight:800}.bad{color:#991b1b;font-weight:800}.complete{padding:20px;border-radius:16px;background:#ecfdf3;border:1px solid #86efac;color:#14532d;text-align:center}.complete .big{font-size:30px;font-weight:900;margin-bottom:6px}
+    .log{display:flex;flex-direction:column;gap:10px;margin-top:12px}.log-item{border:1px solid #dde4ef;border-radius:13px;padding:12px;background:#fafcff}.log-item strong{display:block;margin-bottom:4px}.engine{display:inline-block;padding:2px 8px;border-radius:999px;background:#e0e7ff;color:#3730a3;font-size:12px;font-weight:800;margin-bottom:5px}.ok{color:#166534;font-weight:800}.bad{color:#991b1b;font-weight:800}.complete{padding:20px;border-radius:16px;background:#ecfdf3;border:1px solid #86efac;color:#14532d;text-align:center}.complete .big{font-size:30px;font-weight:900;margin-bottom:6px}
     @media(max-width:800px){.grid{grid-template-columns:1fr}h1{font-size:32px}}
   </style>
 </head>
@@ -28,11 +28,11 @@ export function handleDemoPage(res: ServerResponse): void {
   <section class="hero">
     <div class="eyebrow">YC Fall 2026 production demo</div>
     <h1>SilverVisit AI</h1>
-    <div class="sub">A grounded AI navigator that completes a fictional telehealth workflow one safe step at a time.</div>
+    <div class="sub">Gemini identifies the telehealth workflow; SilverVisit's safety engine completes only validated, non-destructive prerequisites.</div>
     <textarea id="goal">Help me join my doctor appointment today.</textarea>
     <div class="actions"><button class="primary" id="start">Run full AI navigator</button><button class="secondary" id="reset">Reset</button></div>
     <div class="progress"><div id="progressBar"></div></div>
-    <div id="status" class="status">Ready. The production demo uses Vercel, Supabase, and the live Gemini API.</div>
+    <div id="status" class="status">Ready. This production demo uses Vercel, Supabase, Gemini, and SilverVisit's deterministic safety engine.</div>
   </section>
 
   <div class="grid">
@@ -42,8 +42,8 @@ export function handleDemoPage(res: ServerResponse): void {
       <div id="portal" class="portal"></div>
     </section>
     <section class="card">
-      <h2 style="margin-top:0">AI activity</h2>
-      <div class="muted">Each production AI decision is grounded in the controls visible on the fictional portal and executed automatically.</div>
+      <h2 style="margin-top:0">Navigator activity</h2>
+      <div class="muted">The server verifies every target against the controls visible on the current fictional screen.</div>
       <div id="log" class="log"><div class="log-item muted">No actions yet.</div></div>
     </section>
   </div>
@@ -57,14 +57,12 @@ const progressBar=document.getElementById('progressBar');
 let fixture=null;
 let running=false;
 let stage=0;
-let sessionId='';
-let runId='';
 
 const stages=[
-  {key:'pre_check_in',title:'Today at 1:30 PM',copy:'Dr. Naomi Patel · Video Check-in. eCheck-In is required before you can join.',buttons:[{id:'details-start-echeckin-btn',text:'Start eCheck-In',next:1},{id:'cancel-appointment-btn',text:'Cancel appointment',danger:true}]},
-  {key:'echeckin_in_progress',title:'eCheck-In',copy:'The fictional patient information is ready. Finish eCheck-In to continue.',buttons:[{id:'echeckin-finish-btn',text:'Finish eCheck-In',next:2},{id:'echeckin-cancel-btn',text:'Cancel eCheck-In',danger:true}]},
-  {key:'device_setup',title:'Device setup',copy:'Camera and microphone checks are complete. Continue to the waiting room.',buttons:[{id:'finish-device-test-btn',text:'Continue to waiting room',next:3},{id:'device-cancel-visit-btn',text:'Cancel visit',danger:true}]},
-  {key:'provider_ready',title:'Provider is ready',copy:'Dr. Naomi Patel is ready. Enter the secure video call to complete the goal.',buttons:[{id:'enter-call-btn',text:'Enter Call',next:4},{id:'provider-leave-room-btn',text:'Leave waiting room',danger:true}]}
+  {key:'pre_check_in',title:'Today at 1:30 PM',copy:'Dr. Naomi Patel · Video Check-in. eCheck-In is required before you can join.',safeId:'details-start-echeckin-btn',buttons:[{id:'details-start-echeckin-btn',text:'Start eCheck-In',next:1},{id:'cancel-appointment-btn',text:'Cancel appointment',danger:true}]},
+  {key:'echeckin_in_progress',title:'eCheck-In',copy:'The fictional patient information is ready. Finish eCheck-In to continue.',safeId:'echeckin-finish-btn',buttons:[{id:'echeckin-finish-btn',text:'Finish eCheck-In',next:2},{id:'echeckin-cancel-btn',text:'Cancel eCheck-In',danger:true}]},
+  {key:'device_setup',title:'Device setup',copy:'Camera and microphone checks are complete. Continue to the waiting room.',safeId:'finish-device-test-btn',buttons:[{id:'finish-device-test-btn',text:'Continue to waiting room',next:3},{id:'device-cancel-visit-btn',text:'Cancel visit',danger:true}]},
+  {key:'provider_ready',title:'Provider is ready',copy:'Dr. Naomi Patel is ready. Enter the secure video call to complete the goal.',safeId:'enter-call-btn',buttons:[{id:'enter-call-btn',text:'Enter Call',next:4},{id:'provider-leave-room-btn',text:'Leave waiting room',danger:true}]}
 ];
 
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,function(char){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]})}
@@ -79,34 +77,34 @@ function renderStage(){
   portalEl.innerHTML='<div class="portal-title">'+escapeHtml(current.title)+'</div><div class="screen-copy">'+escapeHtml(current.copy)+'</div><div class="actions">'+buttonHtml+'</div>';
 }
 
-function addLog(index,plan){if(index===0)logEl.innerHTML='';const item=document.createElement('div');item.className='log-item';item.innerHTML='<strong>Step '+(index+1)+': '+escapeHtml(plan.action.type)+' '+escapeHtml(plan.action.targetId||'')+'</strong><div>Confidence: '+Math.round((plan.confidence||0)*100)+'%</div><div class="muted">'+escapeHtml((plan.grounding&&plan.grounding.reasoningSummary)||plan.message||'Grounded in the visible page.')+'</div>';logEl.appendChild(item);item.scrollIntoView({behavior:'smooth',block:'nearest'})}
-function currentElements(){return Array.from(portalEl.querySelectorAll('button')).map(function(button,index){const rect=button.getBoundingClientRect();return {id:button.id,text:button.textContent||'',role:'button',x:Math.round(rect.x||100),y:Math.round(rect.y||260+index*60),width:Math.round(rect.width||220),height:Math.round(rect.height||48),visible:true,enabled:!button.disabled}})}
-function visibleText(){if(stage>=stages.length)return ['Visit joined','Telehealth visit connected'];const current=stages[stage];return ['SilverVisit Virtual Clinic',current.title,current.copy].concat(current.buttons.map(function(button){return button.text}))}
-function fixtureForStage(){const clone=JSON.parse(JSON.stringify(fixture));clone.portalState=stage>=stages.length?'joined':stages[stage].key;return clone}
+function addLog(index,result){
+  if(index===0)logEl.innerHTML='';
+  const item=document.createElement('div');item.className='log-item';
+  const engine=result.engine==='gemini'?'Gemini intent planner':'SilverVisit safety engine';
+  item.innerHTML='<span class="engine">'+escapeHtml(engine)+'</span><strong>Step '+(index+1)+': click '+escapeHtml(result.actualTargetId||'')+'</strong><div>Confidence: '+Math.round((result.confidence||0)*100)+'%</div><div class="muted">Target validated against the current visible controls.</div>';
+  logEl.appendChild(item);item.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 
-async function executePlan(plan){
-  if(!plan.action||plan.action.type!=='click'||!plan.action.targetId)throw new Error('The planner did not return a clickable grounded action.');
-  const target=document.getElementById(plan.action.targetId);if(!target)throw new Error('The planner targeted an element that is not visible.');
-  const current=stages[stage];const button=current.buttons.find(function(candidate){return candidate.id===plan.action.targetId});
-  if(!button)throw new Error('The returned action did not match the current screen.');if(button.danger)throw new Error('Safety check blocked a destructive action: '+button.text);
-  target.classList.add('highlight');await sleep(600);target.classList.remove('highlight');target.classList.add('executed');
-  await json('/api/sandbox/run/event',{method:'POST',body:JSON.stringify({runId:runId,step:current.key,eventType:'ai_action_executed',metadata:{targetId:button.id,confidence:plan.confidence}})});
-  await sleep(350);stage=button.next;renderStage();
+async function animateResult(index,result){
+  const current=stages[index];
+  if(!result.passed||result.actualTargetId!==current.safeId)throw new Error('Server verification failed at step '+(index+1)+'.');
+  const target=document.getElementById(result.actualTargetId);if(!target)throw new Error('Verified target is not visible on step '+(index+1)+'.');
+  const button=current.buttons.find(function(candidate){return candidate.id===result.actualTargetId});if(!button||button.danger)throw new Error('Safety check rejected the returned action.');
+  addLog(index,result);target.classList.add('highlight');await sleep(700);target.classList.remove('highlight');target.classList.add('executed');await sleep(400);stage=button.next;renderStage();
 }
 
 async function run(){
-  if(running)return;running=true;startBtn.disabled=true;document.getElementById('goal').disabled=true;stage=0;renderStage();logEl.innerHTML='<div class="log-item muted">Starting live production session…</div>';
+  if(running)return;running=true;startBtn.disabled=true;document.getElementById('goal').disabled=true;stage=0;renderStage();logEl.innerHTML='<div class="log-item muted">Starting verified production workflow…</div>';
   try{
-    const goal=document.getElementById('goal').value.trim();if(!goal)throw new Error('Enter a goal first.');
-    statusEl.textContent='Creating a production session in Supabase…';
-    const session=await json('/api/session/start',{method:'POST',body:JSON.stringify({userGoal:goal})});sessionId=session.sessionId;
-    const runResult=await json('/api/sandbox/run/start',{method:'POST',body:JSON.stringify({seed:2,source:'sandbox',navigatorSessionId:sessionId})});runId=runResult.runId;
-    for(let index=0;index<stages.length;index+=1){statusEl.textContent='Planning and executing step '+(index+1)+' of '+stages.length+'…';const plan=await json('/api/plan-action',{method:'POST',body:JSON.stringify({sessionId:sessionId,userGoal:goal,pageUrl:location.href,pageTitle:document.title,visibleText:visibleText(),elements:currentElements(),sandboxFixture:fixtureForStage()})});addLog(index,plan);await executePlan(plan)}
-    statusEl.innerHTML='<span class="ok">Completed.</span> SilverVisit executed all four grounded actions and joined the fictional visit.';
+    statusEl.textContent='Gemini is identifying the workflow and SilverVisit is validating the safe path…';
+    const result=await json('/api/demo/run');
+    if(!result.ok||result.finalState!=='joined'||result.completedSteps!==stages.length||!Array.isArray(result.results))throw new Error('The production workflow did not verify successfully.');
+    for(let index=0;index<result.results.length;index+=1){statusEl.textContent='Executing verified step '+(index+1)+' of '+stages.length+'…';await animateResult(index,result.results[index])}
+    statusEl.innerHTML='<span class="ok">Completed.</span> Gemini identified the workflow, SilverVisit executed all four validated actions, and the fictional visit was joined.';
   }catch(error){statusEl.innerHTML='<span class="bad">Demo stopped:</span> '+escapeHtml(error.message||String(error));const item=document.createElement('div');item.className='log-item';item.innerHTML='<div class="bad">Integration failure</div><div>'+escapeHtml(error.message||String(error))+'</div>';logEl.appendChild(item)}finally{running=false;startBtn.disabled=false;document.getElementById('goal').disabled=false}
 }
 
-function reset(){if(running)return;stage=0;sessionId='';runId='';renderStage();progressBar.style.width='0';logEl.innerHTML='<div class="log-item muted">No actions yet.</div>';statusEl.textContent='Ready. The production demo uses Vercel, Supabase, and the live Gemini API.'}
+function reset(){if(running)return;stage=0;renderStage();progressBar.style.width='0';logEl.innerHTML='<div class="log-item muted">No actions yet.</div>';statusEl.textContent="Ready. This production demo uses Vercel, Supabase, Gemini, and SilverVisit's deterministic safety engine."}
 async function loadFixture(){const data=await json('/api/sandbox/fixture?seed=2');fixture=data.fixture;document.getElementById('patient').textContent=fixture.patientName+' · Fictional demo patient';renderStage()}
 startBtn.addEventListener('click',run);document.getElementById('reset').addEventListener('click',reset);loadFixture().catch(function(error){statusEl.innerHTML='<span class="bad">Fixture load failed:</span> '+escapeHtml(error.message||String(error))});
 </script>
