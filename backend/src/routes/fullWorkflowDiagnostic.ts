@@ -23,7 +23,7 @@ const stages: DiagnosticStage[] = [
   { key: "provider_ready", title: "Provider is ready", copy: "Enter the secure video call.", expectedTargetId: "enter-call-btn", buttons: [{ id: "enter-call-btn", text: "Enter Call" }, { id: "provider-leave-room-btn", text: "Leave waiting room" }] },
 ];
 
-function isExpectedAction(plan: PlanActionResponse | null, expectedTargetId: string): plan is PlanActionResponse {
+function isExpectedAction(plan: PlanActionResponse | null, expectedTargetId: string): boolean {
   return !!plan && plan.status === "ok" && plan.action.type === "click" && plan.action.targetId === expectedTargetId;
 }
 
