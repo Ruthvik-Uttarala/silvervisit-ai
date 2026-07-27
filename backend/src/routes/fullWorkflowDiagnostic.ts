@@ -17,11 +17,8 @@ interface DiagnosticStage {
 
 const stages: DiagnosticStage[] = [
   { key: "pre_check_in", title: "Today at 1:30 PM", copy: "eCheck-In is required before joining.", expectedTargetId: "details-start-echeckin-btn", buttons: [{ id: "details-start-echeckin-btn", text: "Start eCheck-In" }, { id: "cancel-appointment-btn", text: "Cancel appointment" }] },
-  { key: "echeckin_in_progress", title: "eCheck-In required task", copy: "Confirm fictional patient demographics.", expectedTargetId: "complete-demographics-btn", buttons: [{ id: "complete-demographics-btn", text: "Complete demographics" }, { id: "echeckin-cancel-btn", text: "Cancel eCheck-In" }] },
-  { key: "echeckin_in_progress", title: "eCheck-In ready", copy: "All required tasks are complete.", expectedTargetId: "echeckin-finish-btn", buttons: [{ id: "echeckin-finish-btn", text: "Finish eCheck-In" }, { id: "echeckin-cancel-btn", text: "Cancel eCheck-In" }] },
-  { key: "device_setup", title: "Device setup camera", copy: "Run the required camera and microphone check.", expectedTargetId: "run-device-camera-btn", buttons: [{ id: "run-device-camera-btn", text: "Run device check" }, { id: "device-cancel-visit-btn", text: "Cancel visit" }] },
-  { key: "device_setup", title: "Device setup passed", copy: "Device checks passed. Continue to waiting room.", expectedTargetId: "finish-device-test-btn", buttons: [{ id: "finish-device-test-btn", text: "Continue to waiting room" }, { id: "device-cancel-visit-btn", text: "Cancel visit" }] },
-  { key: "waiting_room", title: "Waiting room", copy: "Check whether the provider is ready.", expectedTargetId: "waiting-check-provider-ready-btn", buttons: [{ id: "waiting-check-provider-ready-btn", text: "Check provider readiness" }, { id: "waiting-leave-btn", text: "Leave appointment" }] },
+  { key: "echeckin_in_progress", title: "eCheck-In", copy: "The fictional patient information is ready. Finish eCheck-In to continue.", expectedTargetId: "echeckin-finish-btn", buttons: [{ id: "echeckin-finish-btn", text: "Finish eCheck-In" }, { id: "echeckin-cancel-btn", text: "Cancel eCheck-In" }] },
+  { key: "device_setup", title: "Device setup", copy: "Camera and microphone checks are complete. Continue to waiting room.", expectedTargetId: "finish-device-test-btn", buttons: [{ id: "finish-device-test-btn", text: "Continue to waiting room" }, { id: "device-cancel-visit-btn", text: "Cancel visit" }] },
   { key: "provider_ready", title: "Provider is ready", copy: "Enter the secure video call.", expectedTargetId: "enter-call-btn", buttons: [{ id: "enter-call-btn", text: "Enter Call" }, { id: "provider-leave-room-btn", text: "Leave waiting room" }] },
 ];
 
