@@ -27,11 +27,16 @@ export class SupabaseRepository {
     this.runtimeReady = this.isConfigured();
   }
 
+  private getApiKey(): string {
+    return this.config.supabaseServiceRoleKey || this.config.supabasePublishableKey;
+  }
+
   getDiagnostics() {
+    const usingServiceRole = this.config.supabaseServiceRoleKey.length > 0;
     return {
       provider: "supabase" as const,
       configured: this.isConfigured(),
-      mode: this.isConfigured() ? "service_role_rest" : "disabled",
+      mode: this.isConfigured() ? (usingServiceRole ? "service_role_rest" : "publishable_rls_rest") : "disabled",
       runtimeReady: this.runtimeReady,
       lastError: this.lastError ?? undefined,
     };
@@ -43,12 +48,15 @@ export class SupabaseRepository {
   }
 
   private isConfigured(): boolean {
-    return this.config.supabaseUrl.length > 0 && this.config.supabaseServiceRoleKey.length > 0;
+    return this.config.supabaseUrl.length > 0 && this.getApiKey().length > 0;
   }
 
   private requireConfigured(): void {
     if (!this.isConfigured() || !this.runtimeReady) {
-      throw new Error(this.lastError ?? "Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY server-side.");
+      throw new Error(
+        this.lastError ??
+          "Supabase is not configured. Set SUPABASE_URL and either SUPABASE_SERVICE_ROLE_KEY or SUPABASE_PUBLISHABLE_KEY server-side.",
+      );
     }
   }
 
@@ -59,9 +67,10 @@ export class SupabaseRepository {
 
   private async request<T>(table: string, init: RequestInit & { query?: string } = {}): Promise<T> {
     this.requireConfigured();
+    const apiKey = this.getApiKey();
     const headers = new Headers(init.headers);
-    headers.set("apikey", this.config.supabaseServiceRoleKey);
-    headers.set("Authorization", `Bearer ${this.config.supabaseServiceRoleKey}`);
+    headers.set("apikey", apiKey);
+    headers.set("Authorization", `Bearer ${apiKey}`);
     if (!headers.has("Content-Type") && init.body) {
       headers.set("Content-Type", "application/json");
     }
