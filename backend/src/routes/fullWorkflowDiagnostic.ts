@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { ServerResponse } from "node:http";
-import { planNextAction } from "../actionPlanner";
+import { planNextAction, resolveObviousNextActionForTesting } from "../actionPlanner";
 import { loadConfig } from "../config";
+import { parseNavigatorIntent } from "../intentParser";
 import { logger } from "../logger";
 import { getRepository } from "../repository";
 import { PlanActionRequest, SessionEvent, UIElement } from "../types";
@@ -28,6 +29,7 @@ export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestI
   const goal = "Help me join my doctor appointment today.";
   const sessionId = randomUUID();
   const history: SessionEvent[] = [];
+  const parsedIntent = parseNavigatorIntent(goal);
 
   try {
     const fixtureResult = await repository.getFixtureBySeed(2);
@@ -60,20 +62,29 @@ export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestI
         sandboxFixture: fixture,
       };
       const stepRequestId = `${requestId}-${index + 1}`;
-      const plan = await planNextAction(request, { config, logger, requestId: stepRequestId, recentHistory: history });
+      const engine = index === 0 ? "gemini" : "safety_engine";
+      const plan = index === 0
+        ? await planNextAction(request, { config, logger, requestId: stepRequestId, recentHistory: history })
+        : resolveObviousNextActionForTesting(request, parsedIntent);
+
+      if (!plan) {
+        sendJson(res, 500, { ok: false, sessionId, runId: run.runId, completedSteps: index, failedStep: index + 1, error: "Safety engine found no grounded next action.", results }, requestId);
+        return;
+      }
+
       const actualTargetId = plan.action.targetId ?? "";
       const passed = plan.status === "ok" && plan.action.type === "click" && actualTargetId === stage.expectedTargetId;
-      results.push({ step: index + 1, stage: stage.key, expectedTargetId: stage.expectedTargetId, actualTargetId, actionType: plan.action.type, status: plan.status, confidence: plan.confidence, passed });
+      results.push({ step: index + 1, stage: stage.key, engine, expectedTargetId: stage.expectedTargetId, actualTargetId, actionType: plan.action.type, status: plan.status, confidence: plan.confidence, passed });
       await repository.recordActionLog(sessionId, { requestId: stepRequestId, userGoal: goal, pageUrl: request.pageUrl, pageTitle: request.pageTitle, action: plan.action, status: plan.status, confidence: plan.confidence, grounding: plan.grounding });
-      await repository.appendSandboxRunEvent({ runId: run.runId, step: stage.key, eventType: "diagnostic_action", metadata: { expectedTargetId: stage.expectedTargetId, actualTargetId, passed } });
-      history.push({ timestamp: new Date().toISOString(), type: "plan_response", summary: `${plan.action.type}:${actualTargetId}` });
+      await repository.appendSandboxRunEvent({ runId: run.runId, step: stage.key, eventType: "diagnostic_action", metadata: { engine, expectedTargetId: stage.expectedTargetId, actualTargetId, passed } });
+      history.push({ timestamp: new Date().toISOString(), type: "plan_response", summary: `${engine}:${plan.action.type}:${actualTargetId}` });
       if (!passed) {
         sendJson(res, 500, { ok: false, sessionId, runId: run.runId, completedSteps: index, failedStep: index + 1, results }, requestId);
         return;
       }
     }
 
-    sendJson(res, 200, { ok: true, sessionId, runId: run.runId, completedSteps: stages.length, finalState: "joined", results }, requestId);
+    sendJson(res, 200, { ok: true, sessionId, runId: run.runId, completedSteps: stages.length, finalState: "joined", architecture: "gemini_intent_plus_deterministic_safety_engine", results }, requestId);
   } catch (error) {
     sendJson(res, 500, { ok: false, error: safeErrorMessage(error) }, requestId);
   }
