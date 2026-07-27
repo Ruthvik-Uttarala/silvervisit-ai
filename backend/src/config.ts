@@ -8,6 +8,7 @@ const DEFAULT_HTTP_KEEPALIVE_TIMEOUT_MS = 65_000;
 const DEFAULT_HTTP_HEADERS_TIMEOUT_MS = 70_000;
 const DEFAULT_SUPABASE_URL = "https://veeivhmjobehdjwnrzec.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_76d2J8l7fBJAQSTeZYuCCg_02nvJtOG";
+const DEFAULT_GEMINI_ACTION_MODEL = "gemini-3.6-flash";
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) return defaultValue;
@@ -27,6 +28,14 @@ function parseNonNegativeInt(value: string | undefined, fallback: number): numbe
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function resolveGeminiActionModel(value: string | undefined): string {
+  const configured = (value ?? DEFAULT_GEMINI_ACTION_MODEL).trim() || DEFAULT_GEMINI_ACTION_MODEL;
+  if (configured === "gemini-2.5-flash" || configured.startsWith("gemini-2.5-flash-")) {
+    return DEFAULT_GEMINI_ACTION_MODEL;
+  }
+  return configured;
 }
 
 function parseDotEnvFile(filePath: string): Record<string, string> {
@@ -73,7 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     useVertexAI,
     googleCloudProject: (resolvedEnv.GOOGLE_CLOUD_PROJECT ?? "").trim(),
     googleCloudLocation: (resolvedEnv.GOOGLE_CLOUD_LOCATION ?? "global").trim() || "global",
-    geminiActionModel: (resolvedEnv.GEMINI_ACTION_MODEL ?? "gemini-2.5-flash").trim() || "gemini-2.5-flash",
+    geminiActionModel: resolveGeminiActionModel(resolvedEnv.GEMINI_ACTION_MODEL),
     geminiLiveModel: (resolvedEnv.GEMINI_LIVE_MODEL ?? "gemini-live-2.5-flash-native-audio").trim() || "gemini-live-2.5-flash-native-audio",
     enableLiveApi: parseBool(resolvedEnv.ENABLE_LIVE_API, false),
     persistenceProvider,
