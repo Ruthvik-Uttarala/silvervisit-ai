@@ -4,6 +4,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/diagnostics/full-workflow-7a1c",
+      "destination": "/api/full-workflow"
+    },
+    {
       "source": "/(.*)",
       "destination": "/api/index"
     }
