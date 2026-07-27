@@ -80,7 +80,7 @@ function renderStage(){
 function addLog(index,result){
   if(index===0)logEl.innerHTML='';
   const item=document.createElement('div');item.className='log-item';
-  const engine=result.engine==='gemini'?'Gemini intent planner':'SilverVisit safety engine';
+  const engine=result.engine==='gemini'?'Live Gemini planner':result.engine==='safety_fallback'?'Validated quota fallback':'SilverVisit safety engine';
   item.innerHTML='<span class="engine">'+escapeHtml(engine)+'</span><strong>Step '+(index+1)+': click '+escapeHtml(result.actualTargetId||'')+'</strong><div>Confidence: '+Math.round((result.confidence||0)*100)+'%</div><div class="muted">Target validated against the current visible controls.</div>';
   logEl.appendChild(item);item.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -100,7 +100,8 @@ async function run(){
     const result=await json('/api/demo/run');
     if(!result.ok||result.finalState!=='joined'||result.completedSteps!==stages.length||!Array.isArray(result.results))throw new Error('The production workflow did not verify successfully.');
     for(let index=0;index<result.results.length;index+=1){statusEl.textContent='Executing verified step '+(index+1)+' of '+stages.length+'…';await animateResult(index,result.results[index])}
-    statusEl.innerHTML='<span class="ok">Completed.</span> Gemini identified the workflow, SilverVisit executed all four validated actions, and the fictional visit was joined.';
+    const plannerMessage=result.geminiSucceeded?'Gemini identified the workflow live.':'Gemini was rate-limited, so SilverVisit used its validated safety fallback.';
+    statusEl.innerHTML='<span class="ok">Completed.</span> '+escapeHtml(plannerMessage)+' SilverVisit executed all four validated actions and joined the fictional visit.';
   }catch(error){statusEl.innerHTML='<span class="bad">Demo stopped:</span> '+escapeHtml(error.message||String(error));const item=document.createElement('div');item.className='log-item';item.innerHTML='<div class="bad">Integration failure</div><div>'+escapeHtml(error.message||String(error))+'</div>';logEl.appendChild(item)}finally{running=false;startBtn.disabled=false;document.getElementById('goal').disabled=false}
 }
 
