@@ -6,7 +6,6 @@ import { getRepository } from "./repository";
 import { handleLiveSocketConnection } from "./liveSession";
 import { logger } from "./logger";
 import { handleHealth } from "./routes/health";
-import { handleIntegrationSelfTest } from "./routes/integrationSelfTest";
 import { buildPlanActionErrorResponse, handlePlanAction } from "./routes/planAction";
 import { handleSandboxFixture, handleSandboxRunEvent, handleSandboxRunStart } from "./routes/sandbox";
 import { handleSessionGet, handleSessionStart } from "./routes/session";
@@ -95,11 +94,6 @@ export async function handleHttpRequest(req: IncomingMessage, res: ServerRespons
 
     if (method === "GET" && pathname === "/health") {
       handleHealth(res, config, requestId);
-      return;
-    }
-
-    if (method === "GET" && pathname === "/api/diagnostics/yc-prod-self-test-8d529f3b") {
-      await handleIntegrationSelfTest(res, requestId, config, repository, logger);
       return;
     }
 
