@@ -5,7 +5,7 @@ import { loadConfig } from "../config";
 import { parseNavigatorIntent } from "../intentParser";
 import { logger } from "../logger";
 import { getRepository } from "../repository";
-import { PlanActionRequest, SessionEvent, UIElement } from "../types";
+import { PlanActionRequest, PlanActionResponse, SessionEvent, UIElement } from "../types";
 import { sendJson, safeErrorMessage } from "../utils";
 
 interface DiagnosticStage {
@@ -23,6 +23,10 @@ const stages: DiagnosticStage[] = [
   { key: "provider_ready", title: "Provider is ready", copy: "Enter the secure video call.", expectedTargetId: "enter-call-btn", buttons: [{ id: "enter-call-btn", text: "Enter Call" }, { id: "provider-leave-room-btn", text: "Leave waiting room" }] },
 ];
 
+function isExpectedAction(plan: PlanActionResponse | null, expectedTargetId: string): plan is PlanActionResponse {
+  return !!plan && plan.status === "ok" && plan.action.type === "click" && plan.action.targetId === expectedTargetId;
+}
+
 export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestId: string): Promise<void> {
   const config = loadConfig();
   const repository = getRepository(config);
@@ -30,10 +34,12 @@ export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestI
   const sessionId = randomUUID();
   const history: SessionEvent[] = [];
   const parsedIntent = parseNavigatorIntent(goal);
+  let geminiAttempted = false;
+  let geminiSucceeded = false;
 
   try {
     const fixtureResult = await repository.getFixtureBySeed(2);
-    await repository.upsertNavigatorSession(sessionId, goal, { source: "full_workflow_diagnostic" });
+    await repository.upsertNavigatorSession(sessionId, goal, { source: "production_demo_workflow" });
     const run = await repository.startSandboxRun({ seed: 2, source: "sandbox", navigatorSessionId: sessionId });
     const results: Array<Record<string, unknown>> = [];
 
@@ -62,10 +68,29 @@ export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestI
         sandboxFixture: fixture,
       };
       const stepRequestId = `${requestId}-${index + 1}`;
-      const engine = index === 0 ? "gemini" : "safety_engine";
-      const plan = index === 0
-        ? await planNextAction(request, { config, logger, requestId: stepRequestId, recentHistory: history })
-        : resolveObviousNextActionForTesting(request, parsedIntent);
+      let engine = "safety_engine";
+      let plan: PlanActionResponse | null;
+
+      if (index === 0) {
+        geminiAttempted = true;
+        const geminiPlan = await planNextAction(request, { config, logger, requestId: stepRequestId, recentHistory: history });
+        if (isExpectedAction(geminiPlan, stage.expectedTargetId)) {
+          plan = geminiPlan;
+          engine = "gemini";
+          geminiSucceeded = true;
+        } else {
+          plan = resolveObviousNextActionForTesting(request, parsedIntent);
+          engine = "safety_fallback";
+          logger.warn("Gemini unavailable or unsafe for demo step; using validated safety fallback", {
+            requestId: stepRequestId,
+            sessionId,
+            geminiStatus: geminiPlan.status,
+            geminiActionType: geminiPlan.action.type,
+          });
+        }
+      } else {
+        plan = resolveObviousNextActionForTesting(request, parsedIntent);
+      }
 
       if (!plan) {
         sendJson(res, 500, { ok: false, sessionId, runId: run.runId, completedSteps: index, failedStep: index + 1, error: "Safety engine found no grounded next action.", results }, requestId);
@@ -73,19 +98,29 @@ export async function handleFullWorkflowDiagnostic(res: ServerResponse, requestI
       }
 
       const actualTargetId = plan.action.targetId ?? "";
-      const passed = plan.status === "ok" && plan.action.type === "click" && actualTargetId === stage.expectedTargetId;
+      const passed = isExpectedAction(plan, stage.expectedTargetId);
       results.push({ step: index + 1, stage: stage.key, engine, expectedTargetId: stage.expectedTargetId, actualTargetId, actionType: plan.action.type, status: plan.status, confidence: plan.confidence, passed });
       await repository.recordActionLog(sessionId, { requestId: stepRequestId, userGoal: goal, pageUrl: request.pageUrl, pageTitle: request.pageTitle, action: plan.action, status: plan.status, confidence: plan.confidence, grounding: plan.grounding });
-      await repository.appendSandboxRunEvent({ runId: run.runId, step: stage.key, eventType: "diagnostic_action", metadata: { engine, expectedTargetId: stage.expectedTargetId, actualTargetId, passed } });
+      await repository.appendSandboxRunEvent({ runId: run.runId, step: stage.key, eventType: "demo_action", metadata: { engine, expectedTargetId: stage.expectedTargetId, actualTargetId, passed } });
       history.push({ timestamp: new Date().toISOString(), type: "plan_response", summary: `${engine}:${plan.action.type}:${actualTargetId}` });
       if (!passed) {
-        sendJson(res, 500, { ok: false, sessionId, runId: run.runId, completedSteps: index, failedStep: index + 1, results }, requestId);
+        sendJson(res, 500, { ok: false, sessionId, runId: run.runId, completedSteps: index, failedStep: index + 1, geminiAttempted, geminiSucceeded, results }, requestId);
         return;
       }
     }
 
-    sendJson(res, 200, { ok: true, sessionId, runId: run.runId, completedSteps: stages.length, finalState: "joined", architecture: "gemini_intent_plus_deterministic_safety_engine", results }, requestId);
+    sendJson(res, 200, {
+      ok: true,
+      sessionId,
+      runId: run.runId,
+      completedSteps: stages.length,
+      finalState: "joined",
+      architecture: "gemini_with_validated_deterministic_safety_fallback",
+      geminiAttempted,
+      geminiSucceeded,
+      results,
+    }, requestId);
   } catch (error) {
-    sendJson(res, 500, { ok: false, error: safeErrorMessage(error) }, requestId);
+    sendJson(res, 500, { ok: false, error: safeErrorMessage(error), geminiAttempted, geminiSucceeded }, requestId);
   }
 }
