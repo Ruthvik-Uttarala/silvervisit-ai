@@ -1,0 +1,47 @@
+name: SilverVisit production integration
+
+on:
+  push:
+    branches:
+      - yc-production
+    paths:
+      - ".github/workflows/production-integration.yml"
+      - "backend/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROD_API_BASE: https://silvervisit-api-git-yc-production-uttarala-ruthvik.vercel.app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Wait for matching Vercel deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            status=$(curl --silent --show-error --output /tmp/health.json --write-out "%{http_code}" "$PROD_API_BASE/health" || true)
+            if [ "$status" = "200" ]; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            echo "Backend not ready yet (HTTP $status), retry $attempt/30"
+            sleep 10
+          done
+          echo "Backend never became healthy"
+          exit 1
+
+      - name: Run production integration probe
+        run: node backend/scripts/production-integration.mjs
