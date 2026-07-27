@@ -124,6 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     persistenceProvider,
     supabaseUrl: (resolvedEnv.SUPABASE_URL ?? "").trim(),
     supabaseServiceRoleKey: (resolvedEnv.SUPABASE_SERVICE_ROLE_KEY ?? "").trim(),
+    supabasePublishableKey: (resolvedEnv.SUPABASE_PUBLISHABLE_KEY ?? "").trim(),
     enableFirestore: persistenceProvider === "firestore" && parseBool(resolvedEnv.ENABLE_FIRESTORE, true),
     firestoreCollectionPrefix: (resolvedEnv.FIRESTORE_COLLECTION_PREFIX ?? "silvervisit").trim() || "silvervisit",
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
