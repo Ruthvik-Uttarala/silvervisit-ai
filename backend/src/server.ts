@@ -5,6 +5,7 @@ import { loadConfig } from "./config";
 import { getRepository } from "./repository";
 import { handleLiveSocketConnection } from "./liveSession";
 import { logger } from "./logger";
+import { handleDemoPage } from "./routes/demoPage";
 import { handleHealth } from "./routes/health";
 import { buildPlanActionErrorResponse, handlePlanAction } from "./routes/planAction";
 import { handleSandboxFixture, handleSandboxRunEvent, handleSandboxRunStart } from "./routes/sandbox";
@@ -84,11 +85,17 @@ export async function handleHttpRequest(req: IncomingMessage, res: ServerRespons
           ok: true,
           service: "silvervisit-backend",
           message:
-            "SilverVisit backend is running. Use /health for status. Use the Chrome extension on a supported telehealth page for live navigation.",
+            "SilverVisit backend is running. Open /demo for the YC production demo, or /health for service status.",
+          demo: "/demo",
           health: "/health",
         },
         requestId,
       );
+      return;
+    }
+
+    if (method === "GET" && pathname === "/demo") {
+      handleDemoPage(res);
       return;
     }
 
