@@ -43,7 +43,7 @@ export function handleDemoPage(res: ServerResponse): void {
     </section>
     <section class="card">
       <h2 style="margin-top:0">AI activity</h2>
-      <div class="muted">Each step is selected from the controls visible on the fictional portal and then executed automatically.</div>
+      <div class="muted">Each production AI decision is grounded in the controls visible on the fictional portal and executed automatically.</div>
       <div id="log" class="log"><div class="log-item muted">No actions yet.</div></div>
     </section>
   </div>
@@ -62,12 +62,9 @@ let runId='';
 
 const stages=[
   {key:'pre_check_in',title:'Today at 1:30 PM',copy:'Dr. Naomi Patel · Video Check-in. eCheck-In is required before you can join.',buttons:[{id:'details-start-echeckin-btn',text:'Start eCheck-In',next:1},{id:'cancel-appointment-btn',text:'Cancel appointment',danger:true}]},
-  {key:'echeckin_in_progress',title:'eCheck-In · Required task',copy:'Confirm the fictional patient demographics before continuing.',buttons:[{id:'complete-demographics-btn',text:'Complete demographics',next:2},{id:'echeckin-cancel-btn',text:'Cancel eCheck-In',danger:true}]},
-  {key:'echeckin_in_progress',title:'eCheck-In · Ready',copy:'All required tasks are complete. Finish eCheck-In to continue.',buttons:[{id:'echeckin-finish-btn',text:'Finish eCheck-In',next:3},{id:'echeckin-cancel-btn',text:'Cancel eCheck-In',danger:true}]},
-  {key:'device_setup',title:'Device setup · Camera',copy:'Run the required camera and microphone check.',buttons:[{id:'run-device-camera-btn',text:'Run device check',next:4},{id:'device-cancel-visit-btn',text:'Cancel visit',danger:true}]},
-  {key:'device_setup',title:'Device setup · Passed',copy:'The fictional device checks passed. Continue to the waiting room.',buttons:[{id:'finish-device-test-btn',text:'Continue to waiting room',next:5},{id:'device-cancel-visit-btn',text:'Cancel visit',danger:true}]},
-  {key:'waiting_room',title:'Waiting room',copy:'You are not joined yet. Check whether Dr. Naomi Patel is ready.',buttons:[{id:'waiting-check-provider-ready-btn',text:'Check provider readiness',next:6},{id:'waiting-leave-btn',text:'Leave appointment',danger:true}]},
-  {key:'provider_ready',title:'Provider is ready',copy:'Dr. Naomi Patel is ready. Enter the secure video call to complete the goal.',buttons:[{id:'enter-call-btn',text:'Enter Call',next:7},{id:'provider-leave-room-btn',text:'Leave waiting room',danger:true}]}
+  {key:'echeckin_in_progress',title:'eCheck-In',copy:'The fictional patient information is ready. Finish eCheck-In to continue.',buttons:[{id:'echeckin-finish-btn',text:'Finish eCheck-In',next:2},{id:'echeckin-cancel-btn',text:'Cancel eCheck-In',danger:true}]},
+  {key:'device_setup',title:'Device setup',copy:'Camera and microphone checks are complete. Continue to the waiting room.',buttons:[{id:'finish-device-test-btn',text:'Continue to waiting room',next:3},{id:'device-cancel-visit-btn',text:'Cancel visit',danger:true}]},
+  {key:'provider_ready',title:'Provider is ready',copy:'Dr. Naomi Patel is ready. Enter the secure video call to complete the goal.',buttons:[{id:'enter-call-btn',text:'Enter Call',next:4},{id:'provider-leave-room-btn',text:'Leave waiting room',danger:true}]}
 ];
 
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,function(char){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]})}
@@ -76,7 +73,7 @@ async function json(path,options){options=options||{};const response=await fetch
 
 function renderStage(){
   progressBar.style.width=(stage/stages.length*100)+'%';
-  if(stage>=stages.length){portalEl.innerHTML='<div class="complete"><div class="big">Visit joined</div><div>SilverVisit completed eCheck-In, device checks, waiting-room readiness, and the final Enter Call action.</div></div>';progressBar.style.width='100%';return}
+  if(stage>=stages.length){portalEl.innerHTML='<div class="complete"><div class="big">Visit joined</div><div>SilverVisit completed eCheck-In, device setup, waiting-room progression, and the final Enter Call action.</div></div>';progressBar.style.width='100%';return}
   const current=stages[stage];
   const buttonHtml=current.buttons.map(function(button){return '<button class="choice '+(button.danger?'danger':'secondary')+'" id="'+button.id+'">'+escapeHtml(button.text)+'</button>'}).join('');
   portalEl.innerHTML='<div class="portal-title">'+escapeHtml(current.title)+'</div><div class="screen-copy">'+escapeHtml(current.copy)+'</div><div class="actions">'+buttonHtml+'</div>';
@@ -105,7 +102,7 @@ async function run(){
     const session=await json('/api/session/start',{method:'POST',body:JSON.stringify({userGoal:goal})});sessionId=session.sessionId;
     const runResult=await json('/api/sandbox/run/start',{method:'POST',body:JSON.stringify({seed:2,source:'sandbox',navigatorSessionId:sessionId})});runId=runResult.runId;
     for(let index=0;index<stages.length;index+=1){statusEl.textContent='Planning and executing step '+(index+1)+' of '+stages.length+'…';const plan=await json('/api/plan-action',{method:'POST',body:JSON.stringify({sessionId:sessionId,userGoal:goal,pageUrl:location.href,pageTitle:document.title,visibleText:visibleText(),elements:currentElements(),sandboxFixture:fixtureForStage()})});addLog(index,plan);await executePlan(plan)}
-    statusEl.innerHTML='<span class="ok">Completed.</span> SilverVisit executed all seven grounded actions and joined the fictional visit.';
+    statusEl.innerHTML='<span class="ok">Completed.</span> SilverVisit executed all four grounded actions and joined the fictional visit.';
   }catch(error){statusEl.innerHTML='<span class="bad">Demo stopped:</span> '+escapeHtml(error.message||String(error));const item=document.createElement('div');item.className='log-item';item.innerHTML='<div class="bad">Integration failure</div><div>'+escapeHtml(error.message||String(error))+'</div>';logEl.appendChild(item)}finally{running=false;startBtn.disabled=false;document.getElementById('goal').disabled=false}
 }
 
